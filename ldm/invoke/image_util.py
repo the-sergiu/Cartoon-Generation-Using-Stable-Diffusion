@@ -9,8 +9,8 @@ class InitImageResizer():
     def resize(self,width=None,height=None) -> Image:
         """
         Return a copy of the image resized to fit within
-        a box width x height. The aspect ratio is
-        maintained. If neither width nor height are provided,
+        a box width x height. The aspect ratio is 
+        maintained. If neither width nor height are provided, 
         then returns a copy of the original image. If one or the other is
         provided, then the other will be calculated from the
         aspect ratio.
@@ -19,7 +19,7 @@ class InitImageResizer():
         that it can be passed to img2img()
         """
         im    = self.image
-
+        
         ar = im.width/float(im.height)
 
         # Infer missing values from aspect ratio
@@ -31,10 +31,10 @@ class InitImageResizer():
         elif not width:            # width missing
             width  = int(height*ar)
 
-        w_scale = width/im.width
-        h_scale = height/im.height
-        scale = min(w_scale,h_scale)
-        (rw,rh) = (int(scale*im.width),int(scale*im.height))
+        # rw and rh are the resizing width and height for the image
+        # they maintain the aspect ratio, but may not completelyl fill up
+        # the requested destination size
+        (rw,rh) = (width,int(width/ar)) if im.width>=im.height else (int(height*ar),height)
 
         #round everything to multiples of 64
         width,height,rw,rh = map(
@@ -44,7 +44,7 @@ class InitImageResizer():
         # no resize necessary, but return a copy
         if im.width == width and im.height == height:
             return im.copy()
-
+        
         # otherwise resize the original image so that it fits inside the bounding box
         resized_image = self.image.resize((rw,rh),resample=Image.Resampling.LANCZOS)
         return resized_image

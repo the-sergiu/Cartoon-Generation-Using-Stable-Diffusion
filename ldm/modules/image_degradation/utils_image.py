@@ -98,7 +98,7 @@ def _get_paths_from_images(path):
 
 """
 # --------------------------------------------
-# split large images into small images
+# split large images into small images 
 # --------------------------------------------
 """
 
@@ -193,7 +193,7 @@ def mkdir_and_rename(path):
     if os.path.exists(path):
         new_name = path + '_archived_' + get_timestamp()
         print('Path already exists. Rename it to [{:s}]'.format(new_name))
-        os.replace(path, new_name)
+        os.rename(path, new_name)
     os.makedirs(path)
 
 

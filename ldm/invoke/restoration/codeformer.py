@@ -3,18 +3,13 @@ import torch
 import numpy as np
 import warnings
 import sys
-from ldm.invoke.globals import Globals
 
 pretrained_model_url = 'https://github.com/sczhou/CodeFormer/releases/download/v0.1.0/codeformer.pth'
 
 class CodeFormerRestoration():
     def __init__(self,
-            codeformer_dir='models/codeformer',
-            codeformer_model_path='codeformer.pth') -> None:
-
-        if not os.path.isabs(codeformer_dir):
-            codeformer_dir = os.path.join(Globals.root, codeformer_dir)
-
+            codeformer_dir='ldm/invoke/restoration/codeformer',
+            codeformer_model_path='weights/codeformer.pth') -> None:
         self.model_path = os.path.join(codeformer_dir, codeformer_model_path)
         self.codeformer_model_exists = os.path.isfile(self.model_path)
 
@@ -35,23 +30,12 @@ class CodeFormerRestoration():
             from ldm.invoke.restoration.codeformer_arch import CodeFormer
             from torchvision.transforms.functional import normalize
             from PIL import Image
-
+            
             cf_class = CodeFormer
-
-            cf = cf_class(
-                dim_embd=512,
-                codebook_size=1024,
-                n_head=8,
-                n_layers=9,
-                connect_list=['32', '64', '128', '256']
-            ).to(device)
-
-            # note that this file should already be downloaded and cached at
-            # this point
-            checkpoint_path = load_file_from_url(url=pretrained_model_url,
-                                                 model_dir=os.path.abspath(os.path.dirname(self.model_path)),
-                                                 progress=True
-            )
+            
+            cf = cf_class(dim_embd=512, codebook_size=1024, n_head=8, n_layers=9, connect_list=['32', '64', '128', '256']).to(device)
+            
+            checkpoint_path = load_file_from_url(url=pretrained_model_url, model_dir=os.path.abspath('ldm/invoke/restoration/codeformer/weights'), progress=True)
             checkpoint = torch.load(checkpoint_path)['params_ema']
             cf.load_state_dict(checkpoint)
             cf.eval()
@@ -60,12 +44,7 @@ class CodeFormerRestoration():
             # Codeformer expects a BGR np array; make array and flip channels
             bgr_image_array = np.array(image, dtype=np.uint8)[...,::-1]
 
-            face_helper = FaceRestoreHelper(
-                upscale_factor=1,
-                use_parse=True,
-                device=device,
-                model_rootpath=os.path.join(Globals.root,'models','gfpgan','weights'),
-            )
+            face_helper = FaceRestoreHelper(upscale_factor=1, use_parse=True, device=device)
             face_helper.clean_all()
             face_helper.read_image(bgr_image_array)
             face_helper.get_face_landmarks_5(resize=640, eye_dist_threshold=5)

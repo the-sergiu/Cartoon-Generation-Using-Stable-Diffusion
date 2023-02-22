@@ -7,116 +7,25 @@ get_uc_and_c_and_ec()           get the conditioned and unconditioned latent, an
 
 '''
 import re
-from typing import Union, Optional, Any
+from difflib import SequenceMatcher
+from typing import Union
 
-from transformers import CLIPTokenizer, CLIPTextModel
+import torch
 
-from compel import Compel
-from compel.prompt_parser import FlattenedPrompt, Blend, Fragment, CrossAttentionControlSubstitute, PromptParser
-from .devices import torch_dtype
+from .prompt_parser import PromptParser, Blend, FlattenedPrompt, \
+    CrossAttentionControlledFragment, CrossAttentionControlSubstitute, Fragment, log_tokenization
+from ..models.diffusion.cross_attention_control import CrossAttentionControl
 from ..models.diffusion.shared_invokeai_diffusion import InvokeAIDiffuserComponent
-from ldm.invoke.globals import Globals
-
-def get_tokenizer(model) -> CLIPTokenizer:
-    # TODO remove legacy ckpt fallback handling
-    return (getattr(model, 'tokenizer', None) # diffusers
-            or model.cond_stage_model.tokenizer) # ldm
-
-def get_text_encoder(model) -> Any:
-    # TODO remove legacy ckpt fallback handling
-    return (getattr(model, 'text_encoder', None)  # diffusers
-            or UnsqueezingLDMTransformer(model.cond_stage_model.transformer)) # ldm
-
-class UnsqueezingLDMTransformer:
-    def __init__(self, ldm_transformer):
-        self.ldm_transformer = ldm_transformer
-
-    @property
-    def device(self):
-        return self.ldm_transformer.device
-
-    def __call__(self, *args, **kwargs):
-        insufficiently_unsqueezed_tensor = self.ldm_transformer(*args, **kwargs)
-        return insufficiently_unsqueezed_tensor.unsqueeze(0)
+from ..modules.encoders.modules import WeightedFrozenCLIPEmbedder
 
 
-def get_uc_and_c_and_ec(prompt_string, model, log_tokens=False, skip_normalize_legacy_blend=False):
-    # lazy-load any deferred textual inversions.
-    # this might take a couple of seconds the first time a textual inversion is used.
-    model.textual_inversion_manager.create_deferred_token_ids_for_any_trigger_terms(prompt_string)
+def get_uc_and_c_and_ec(prompt_string_uncleaned, model, log_tokens=False, skip_normalize=False):
 
-    tokenizer = get_tokenizer(model)
-    text_encoder = get_text_encoder(model)
-    compel = Compel(tokenizer=tokenizer,
-                    text_encoder=text_encoder,
-                    textual_inversion_manager=model.textual_inversion_manager,
-                    dtype_for_device_getter=torch_dtype)
-
-    positive_prompt_string, negative_prompt_string = split_prompt_to_positive_and_negative(prompt_string)
-    legacy_blend = try_parse_legacy_blend(positive_prompt_string, skip_normalize_legacy_blend)
-    positive_prompt: FlattenedPrompt|Blend
-    if legacy_blend is not None:
-        positive_prompt = legacy_blend
-    else:
-        positive_prompt = Compel.parse_prompt_string(positive_prompt_string)
-    negative_prompt: FlattenedPrompt|Blend = Compel.parse_prompt_string(negative_prompt_string)
-
-    if log_tokens or getattr(Globals, "log_tokenization", False):
-        log_tokenization(positive_prompt, negative_prompt, tokenizer=tokenizer)
-
-    c, options = compel.build_conditioning_tensor_for_prompt_object(positive_prompt)
-    uc, _ = compel.build_conditioning_tensor_for_prompt_object(negative_prompt)
-
-    tokens_count = get_max_token_count(tokenizer, positive_prompt)
-
-    ec = InvokeAIDiffuserComponent.ExtraConditioningInfo(tokens_count_including_eos_bos=tokens_count,
-                                                         cross_attention_control_args=options.get(
-                                                             'cross_attention_control', None))
-    return uc, c, ec
-
-
-def get_prompt_structure(prompt_string, skip_normalize_legacy_blend: bool = False) -> (
-    Union[FlattenedPrompt, Blend], FlattenedPrompt):
-    positive_prompt_string, negative_prompt_string = split_prompt_to_positive_and_negative(prompt_string)
-    legacy_blend = try_parse_legacy_blend(positive_prompt_string, skip_normalize_legacy_blend)
-    positive_prompt: FlattenedPrompt|Blend
-    if legacy_blend is not None:
-        positive_prompt = legacy_blend
-    else:
-        positive_prompt = Compel.parse_prompt_string(positive_prompt_string)
-    negative_prompt: FlattenedPrompt|Blend = Compel.parse_prompt_string(negative_prompt_string)
-
-    return positive_prompt, negative_prompt
-
-def get_max_token_count(tokenizer, prompt: FlattenedPrompt|Blend, truncate_if_too_long=True) -> int:
-    if type(prompt) is Blend:
-        blend: Blend = prompt
-        return max([get_max_token_count(tokenizer, c, truncate_if_too_long) for c in blend.prompts])
-    else:
-        return len(get_tokens_for_prompt_object(tokenizer, prompt, truncate_if_too_long))
-
-
-def get_tokens_for_prompt_object(tokenizer, parsed_prompt: FlattenedPrompt, truncate_if_too_long=True) -> [str]:
-
-    if type(parsed_prompt) is Blend:
-        raise ValueError("Blend is not supported here - you need to get tokens for each of its .children")
-
-    text_fragments = [x.text if type(x) is Fragment else
-                      (" ".join([f.text for f in x.original]) if type(x) is CrossAttentionControlSubstitute else
-                       str(x))
-                      for x in parsed_prompt.children]
-    text = " ".join(text_fragments)
-    tokens = tokenizer.tokenize(text)
-    if truncate_if_too_long:
-        max_tokens_length = tokenizer.model_max_length - 2  # typically 75
-        tokens = tokens[0:max_tokens_length]
-    return tokens
-
-
-def split_prompt_to_positive_and_negative(prompt_string_uncleaned):
+    # Extract Unconditioned Words From Prompt
     unconditioned_words = ''
     unconditional_regex = r'\[(.*?)\]'
     unconditionals = re.findall(unconditional_regex, prompt_string_uncleaned)
+
     if len(unconditionals) > 0:
         unconditioned_words = ' '.join(unconditionals)
 
@@ -126,127 +35,160 @@ def split_prompt_to_positive_and_negative(prompt_string_uncleaned):
         prompt_string_cleaned = re.sub(' +', ' ', clean_prompt)
     else:
         prompt_string_cleaned = prompt_string_uncleaned
-    return prompt_string_cleaned, unconditioned_words
-
-
-def log_tokenization(positive_prompt: Blend | FlattenedPrompt,
-                     negative_prompt: Blend | FlattenedPrompt,
-                     tokenizer):
-    print(f"\n>> [TOKENLOG] Parsed Prompt: {positive_prompt}")
-    print(f"\n>> [TOKENLOG] Parsed Negative Prompt: {negative_prompt}")
-
-    log_tokenization_for_prompt_object(positive_prompt, tokenizer)
-    log_tokenization_for_prompt_object(negative_prompt, tokenizer, display_label_prefix="(negative prompt)")
-
-
-def log_tokenization_for_prompt_object(p: Blend | FlattenedPrompt, tokenizer, display_label_prefix=None):
-    display_label_prefix = display_label_prefix or ""
-    if type(p) is Blend:
-        blend: Blend = p
-        for i, c in enumerate(blend.prompts):
-            log_tokenization_for_prompt_object(
-                c, tokenizer,
-                display_label_prefix=f"{display_label_prefix}(blend part {i + 1}, weight={blend.weights[i]})")
-    elif type(p) is FlattenedPrompt:
-        flattened_prompt: FlattenedPrompt = p
-        if flattened_prompt.wants_cross_attention_control:
-            original_fragments = []
-            edited_fragments = []
-            for f in flattened_prompt.children:
-                if type(f) is CrossAttentionControlSubstitute:
-                    original_fragments += f.original
-                    edited_fragments += f.edited
-                else:
-                    original_fragments.append(f)
-                    edited_fragments.append(f)
-
-            original_text = " ".join([x.text for x in original_fragments])
-            log_tokenization_for_text(original_text, tokenizer,
-                                      display_label=f"{display_label_prefix}(.swap originals)")
-            edited_text = " ".join([x.text for x in edited_fragments])
-            log_tokenization_for_text(edited_text, tokenizer,
-                                      display_label=f"{display_label_prefix}(.swap replacements)")
-        else:
-            text = " ".join([x.text for x in flattened_prompt.children])
-            log_tokenization_for_text(text, tokenizer, display_label=display_label_prefix)
-
-
-def log_tokenization_for_text(text, tokenizer, display_label=None):
-    """ shows how the prompt is tokenized
-    # usually tokens have '</w>' to indicate end-of-word,
-    # but for readability it has been replaced with ' '
-    """
-    tokens = tokenizer.tokenize(text)
-    tokenized = ""
-    discarded = ""
-    usedTokens = 0
-    totalTokens = len(tokens)
-
-    for i in range(0, totalTokens):
-        token = tokens[i].replace('</w>', ' ')
-        # alternate color
-        s = (usedTokens % 6) + 1
-        if i < tokenizer.model_max_length:
-            tokenized = tokenized + f"\x1b[0;3{s};40m{token}"
-            usedTokens += 1
-        else:  # over max token length
-            discarded = discarded + f"\x1b[0;3{s};40m{token}"
-
-    if usedTokens > 0:
-        print(f'\n>> [TOKENLOG] Tokens {display_label or ""} ({usedTokens}):')
-        print(f'{tokenized}\x1b[0m')
-
-    if discarded != "":
-        print(f'\n>> [TOKENLOG] Tokens Discarded ({totalTokens - usedTokens}):')
-        print(f'{discarded}\x1b[0m')
-
-
-def try_parse_legacy_blend(text: str, skip_normalize: bool=False) -> Optional[Blend]:
-    weighted_subprompts = split_weighted_subprompts(text, skip_normalize=skip_normalize)
-    if len(weighted_subprompts) <= 1:
-        return None
-    strings = [x[0] for x in weighted_subprompts]
-    weights = [x[1] for x in weighted_subprompts]
 
     pp = PromptParser()
-    parsed_conjunctions = [pp.parse_conjunction(x) for x in strings]
-    flattened_prompts = [x.prompts[0] for x in parsed_conjunctions]
 
-    return Blend(prompts=flattened_prompts, weights=weights, normalize_weights=not skip_normalize)
+    parsed_prompt: Union[FlattenedPrompt, Blend] = None
+    legacy_blend: Blend = pp.parse_legacy_blend(prompt_string_cleaned)
+    if legacy_blend is not None:
+        parsed_prompt = legacy_blend
+    else:
+        # we don't support conjunctions for now
+        parsed_prompt = pp.parse_conjunction(prompt_string_cleaned).prompts[0]
+
+    parsed_negative_prompt: FlattenedPrompt = pp.parse_conjunction(unconditioned_words).prompts[0]
+
+    conditioning = None
+    cac_args:CrossAttentionControl.Arguments = None
+
+    if type(parsed_prompt) is Blend:
+        blend: Blend = parsed_prompt
+        embeddings_to_blend = None
+        for i,flattened_prompt in enumerate(blend.prompts):
+            this_embedding, _ = build_embeddings_and_tokens_for_flattened_prompt(model,
+                                                                                 flattened_prompt,
+                                                                                 log_tokens=log_tokens,
+                                                                                 log_display_label=f"(blend part {i+1}, weight={blend.weights[i]})" )
+            embeddings_to_blend = this_embedding if embeddings_to_blend is None else torch.cat(
+                (embeddings_to_blend, this_embedding))
+        conditioning = WeightedFrozenCLIPEmbedder.apply_embedding_weights(embeddings_to_blend.unsqueeze(0),
+                                                                                blend.weights,
+                                                                                normalize=blend.normalize_weights)
+    else:
+        flattened_prompt: FlattenedPrompt = parsed_prompt
+        wants_cross_attention_control = type(flattened_prompt) is not Blend \
+                                        and any([issubclass(type(x), CrossAttentionControlledFragment) for x in flattened_prompt.children])
+        if wants_cross_attention_control:
+            original_prompt = FlattenedPrompt()
+            edited_prompt = FlattenedPrompt()
+            # for name, a0, a1, b0, b1 in edit_opcodes: only name == 'equal' is currently parsed
+            original_token_count = 0
+            edited_token_count = 0
+            edit_opcodes = []
+            edit_options = []
+            for fragment in flattened_prompt.children:
+                if type(fragment) is CrossAttentionControlSubstitute:
+                    original_prompt.append(fragment.original)
+                    edited_prompt.append(fragment.edited)
+
+                    to_replace_token_count = get_tokens_length(model, fragment.original)
+                    replacement_token_count = get_tokens_length(model, fragment.edited)
+                    edit_opcodes.append(('replace',
+                                        original_token_count, original_token_count + to_replace_token_count,
+                                        edited_token_count, edited_token_count + replacement_token_count
+                                        ))
+                    original_token_count += to_replace_token_count
+                    edited_token_count += replacement_token_count
+                    edit_options.append(fragment.options)
+                #elif type(fragment) is CrossAttentionControlAppend:
+                #    edited_prompt.append(fragment.fragment)
+                else:
+                    # regular fragment
+                    original_prompt.append(fragment)
+                    edited_prompt.append(fragment)
+
+                    count = get_tokens_length(model, [fragment])
+                    edit_opcodes.append(('equal', original_token_count, original_token_count+count, edited_token_count, edited_token_count+count))
+                    edit_options.append(None)
+                    original_token_count += count
+                    edited_token_count += count
+            original_embeddings, original_tokens = build_embeddings_and_tokens_for_flattened_prompt(model,
+                                                                                                    original_prompt,
+                                                                                                    log_tokens=log_tokens,
+                                                                                                    log_display_label="(.swap originals)")
+            # naïvely building a single edited_embeddings like this disregards the effects of changing the absolute location of
+            # subsequent tokens when there is >1 edit and earlier edits change the total token count.
+            # eg "a cat.swap(smiling dog, s_start=0.5) eating a hotdog.swap(pizza)" - when the 'pizza' edit is active but the
+            # 'cat' edit is not, the 'pizza' feature vector will nevertheless be affected by the introduction of the extra
+            # token 'smiling' in the inactive 'cat' edit.
+            # todo: build multiple edited_embeddings, one for each edit, and pass just the edited fragments through to the CrossAttentionControl functions
+            edited_embeddings, edited_tokens = build_embeddings_and_tokens_for_flattened_prompt(model,
+                                                                                                edited_prompt,
+                                                                                                log_tokens=log_tokens,
+                                                                                                log_display_label="(.swap replacements)")
+
+            conditioning = original_embeddings
+            edited_conditioning = edited_embeddings
+            #print('>> got edit_opcodes', edit_opcodes, 'options', edit_options)
+            cac_args = CrossAttentionControl.Arguments(
+                edited_conditioning = edited_conditioning,
+                edit_opcodes = edit_opcodes,
+                edit_options = edit_options
+            )
+        else:
+            conditioning, _ = build_embeddings_and_tokens_for_flattened_prompt(model,
+                                                                               flattened_prompt,
+                                                                               log_tokens=log_tokens,
+                                                                               log_display_label="(prompt)")
+
+    unconditioning, _ = build_embeddings_and_tokens_for_flattened_prompt(model,
+                                                                         parsed_negative_prompt,
+                                                                         log_tokens=log_tokens,
+                                                                         log_display_label="(unconditioning)")
+    if isinstance(conditioning, dict):
+        # hybrid conditioning is in play
+        unconditioning, conditioning = flatten_hybrid_conditioning(unconditioning, conditioning)
+        if cac_args is not None:
+            print(">> Hybrid conditioning cannot currently be combined with cross attention control. Cross attention control will be ignored.")
+            cac_args = None
+
+    return (
+        unconditioning, conditioning, InvokeAIDiffuserComponent.ExtraConditioningInfo(
+            cross_attention_control_args=cac_args
+        )
+    )
 
 
-def split_weighted_subprompts(text, skip_normalize=False)->list:
-    """
-    Legacy blend parsing.
+def build_token_edit_opcodes(original_tokens, edited_tokens):
+    original_tokens = original_tokens.cpu().numpy()[0]
+    edited_tokens = edited_tokens.cpu().numpy()[0]
 
-    grabs all text up to the first occurrence of ':'
-    uses the grabbed text as a sub-prompt, and takes the value following ':' as weight
-    if ':' has no value defined, defaults to 1.0
-    repeats until no text remaining
-    """
-    prompt_parser = re.compile("""
-            (?P<prompt>     # capture group for 'prompt'
-            (?:\\\:|[^:])+  # match one or more non ':' characters or escaped colons '\:'
-            )               # end 'prompt'
-            (?:             # non-capture group
-            :+              # match one or more ':' characters
-            (?P<weight>     # capture group for 'weight'
-            -?\d+(?:\.\d+)? # match positive or negative integer or decimal number
-            )?              # end weight capture group, make optional
-            \s*             # strip spaces after weight
-            |               # OR
-            $               # else, if no ':' then match end of line
-            )               # end non-capture group
-            """, re.VERBOSE)
-    parsed_prompts = [(match.group("prompt").replace("\\:", ":"), float(
-        match.group("weight") or 1)) for match in re.finditer(prompt_parser, text)]
-    if skip_normalize:
-        return parsed_prompts
-    weight_sum = sum(map(lambda x: x[1], parsed_prompts))
-    if weight_sum == 0:
-        print(
-            "* Warning: Subprompt weights add up to zero. Discarding and using even weights instead.")
-        equal_weight = 1 / max(len(parsed_prompts), 1)
-        return [(x[0], equal_weight) for x in parsed_prompts]
-    return [(x[0], x[1] / weight_sum) for x in parsed_prompts]
+    return SequenceMatcher(None, original_tokens, edited_tokens).get_opcodes()
 
+def build_embeddings_and_tokens_for_flattened_prompt(model, flattened_prompt: FlattenedPrompt, log_tokens: bool=False, log_display_label: str=None):
+    if type(flattened_prompt) is not FlattenedPrompt:
+        raise Exception(f"embeddings can only be made from FlattenedPrompts, got {type(flattened_prompt)} instead")
+    fragments = [x.text for x in flattened_prompt.children]
+    weights = [x.weight for x in flattened_prompt.children]
+    embeddings, tokens = model.get_learned_conditioning([fragments], return_tokens=True, fragment_weights=[weights])
+    if log_tokens:
+        text = " ".join(fragments)
+        log_tokenization(text, model, display_label=log_display_label)
+
+    return embeddings, tokens
+
+def get_tokens_length(model, fragments: list[Fragment]):
+    fragment_texts = [x.text for x in fragments]
+    tokens = model.cond_stage_model.get_tokens(fragment_texts, include_start_and_end_markers=False)
+    return sum([len(x) for x in tokens])
+
+def flatten_hybrid_conditioning(uncond, cond):
+    '''
+    This handles the choice between a conditional conditioning
+    that is a tensor (used by cross attention) vs one that has additional
+    dimensions as well, as used by 'hybrid'
+    '''
+    assert isinstance(uncond, dict)
+    assert isinstance(cond, dict)
+    cond_flattened = dict()
+    for k in cond:
+        if isinstance(cond[k], list):
+            cond_flattened[k] = [
+                torch.cat([uncond[k][i], cond[k][i]])
+                for i in range(len(cond[k]))
+            ]
+        else:
+            cond_flattened[k] = torch.cat([uncond[k], cond[k]])
+    return uncond, cond_flattened
+
+            

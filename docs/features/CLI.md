@@ -1,56 +1,43 @@
 ---
-title: Command-Line Interface
+title: CLI
 ---
 
 # :material-bash: CLI
 
 ## **Interactive Command Line Interface**
 
-The InvokeAI command line interface (CLI) provides scriptable access
-to InvokeAI's features.Some advanced features are only available
-through the CLI, though they eventually find their way into the WebUI.
+The `invoke.py` script, located in `scripts/`, provides an interactive interface
+to image generation similar to the "invoke mothership" bot that Stable AI
+provided on its Discord server.
 
-The CLI is accessible from the `invoke.sh`/`invoke.bat` launcher by
-selecting option (1). Alternatively, it can be launched directly from
-the command line by activating the InvokeAI environment and giving the
-command:
-
-```bash
-invokeai
-```
-
-After some startup messages, you will be presented with the `invoke> `
-prompt. Here you can type prompts to generate images and issue other
-commands to load and manipulate generative models. The CLI has a large
-number of command-line options that control its behavior. To get a
-concise summary of the options, call `invokeai` with the `--help` argument:
-
-```bash
-invokeai --help
-```
+Unlike the `txt2img.py` and `img2img.py` scripts provided in the original
+[CompVis/stable-diffusion](https://github.com/CompVis/stable-diffusion) source
+code repository, the time-consuming initialization of the AI model
+initialization only happens once. After that image generation from the
+command-line interface is very fast.
 
 The script uses the readline library to allow for in-line editing, command
 history (++up++ and ++down++), autocompletion, and more. To help keep track of
 which prompts generated which images, the script writes a log file of image
 names and prompts to the selected output directory.
 
-Here is a typical session
+In addition, as of version 1.02, it also writes the prompt into the PNG file's
+metadata where it can be retrieved using `scripts/images2prompt.py`
+
+The script is confirmed to work on Linux, Windows and Mac systems.
+
+!!! note
+
+    This script runs from the command-line or can be used as a Web application. The Web GUI is
+    currently rudimentary, but a much better replacement is on its way.
 
 ```bash
-PS1:C:\Users\fred> invokeai
+(invokeai) ~/stable-diffusion$ python3 ./scripts/invoke.py
 * Initializing, be patient...
-* Initializing, be patient...
->> Initialization file /home/lstein/invokeai/invokeai.init found. Loading...
->> Internet connectivity is True
->> InvokeAI, version 2.3.0-rc5
->> InvokeAI runtime directory is "/home/lstein/invokeai"
->> GFPGAN Initialized
->> CodeFormer Initialized
->> ESRGAN Initialized
->> Using device_type cuda
->> xformers memory-efficient attention is available and enabled
-     (...more initialization messages...)
-* Initialization done! Awaiting your command (-h for help, 'q' to quit)
+Loading model from models/ldm/text2img-large/model.ckpt
+(...more initialization messages...)
+
+* Initialization done! Awaiting your command...
 invoke> ashley judd riding a camel -n2 -s150
 Outputs:
    outputs/img-samples/00009.png: "ashley judd riding a camel" -n2 -s150 -S 416354203
@@ -60,15 +47,27 @@ invoke> "there's a fly in my soup" -n6 -g
     outputs/img-samples/00011.png: "there's a fly in my soup" -n6 -g -S 2685670268
     seeds for individual rows: [2685670268, 1216708065, 2335773498, 822223658, 714542046, 3395302430]
 invoke> q
+
+# this shows how to retrieve the prompt stored in the saved image's metadata
+(invokeai) ~/stable-diffusion$ python ./scripts/images2prompt.py outputs/img_samples/*.png
+00009.png: "ashley judd riding a camel" -s150 -S 416354203
+00010.png: "ashley judd riding a camel" -s150 -S 1362479620
+00011.png: "there's a fly in my soup" -n6 -g -S 2685670268
 ```
 
 ![invoke-py-demo](../assets/dream-py-demo.png)
 
+The `invoke>` prompt's arguments are pretty much identical to those used in the
+Discord bot, except you don't need to type `!invoke` (it doesn't hurt if you
+do). A significant change is that creation of individual images is now the
+default unless `--grid` (`-g`) is given. A full list is given in
+[List of prompt arguments](#list-of-prompt-arguments).
+
 ## Arguments
 
-The script recognizes a series of command-line switches that will
-change important global defaults, such as the directory for image
-outputs and the location of the model weight files.
+The script itself also recognizes a series of command-line switches that will
+change important global defaults, such as the directory for image outputs and
+the location of the model weight files.
 
 ### List of arguments recognized at the command line
 
@@ -83,14 +82,10 @@ overridden on a per-prompt basis (see
 | `--outdir <path>`                         | `-o<path>`                                | `outputs/img_samples`                          | Location for generated images.                                                                       |
 | `--prompt_as_dir`                         | `-p`                                      | `False`                                        | Name output directories using the prompt text.                                                       |
 | `--from_file <path>`                      |                                           | `None`                                         | Read list of prompts from a file. Use `-` to read from standard input                                |
-| `--model <modelname>`                     |                                           | `stable-diffusion-1.5`                         | Loads the initial model specified in configs/models.yaml. |
-| `--ckpt_convert `           |                                                         | `False`                                        | If provided both .ckpt and .safetensors files will be auto-converted into diffusers format in memory |
-| `--autoconvert <path>`                    |                          | `None`                                        | On startup, scan the indicated directory for new .ckpt/.safetensor files and automatically convert and import them |
-| `--precision`                             |                                           | `fp16`                                         | Provide `fp32` for full precision mode, `fp16` for half-precision. `fp32` needed for Macintoshes and some NVidia cards. |
+| `--model <modelname>`                     |                                           | `stable-diffusion-1.4`                         | Loads model specified in configs/models.yaml. Currently one of "stable-diffusion-1.4" or "laion400m" |
+| `--full_precision`                        | `-F`                                      | `False`                                        | Run in slower full-precision mode. Needed for Macintosh M1/M2 hardware and some older video cards.   |
 | `--png_compression <0-9>`                 | `-z<0-9>`                                 | `6`                                            | Select level of compression for output files, from 0 (no compression) to 9 (max compression)         |
 | `--safety-checker`                        |                                           | `False`                                        | Activate safety checker for NSFW and other potentially disturbing imagery                            |
-| `--patchmatch`, `--no-patchmatch`                 |                                   | `--patchmatch`                                        | Load/Don't load the PatchMatch inpainting extension    |
-| `--xformers`, `--no-xformers`                 |                                   | `--xformers`                                        | Load/Don't load the Xformers memory-efficient attention module (CUDA only)    |
 | `--web`                                   |                                           | `False`                                        | Start in web server mode                                                                             |
 | `--host <ip addr>`                        |                                           | `localhost`                                    | Which network interface web server should listen on. Set to 0.0.0.0 to listen on any.                |
 | `--port <port>`                           |                                           | `9090`                                         | Which port web server should listen for requests on.                                                 |
@@ -114,7 +109,6 @@ overridden on a per-prompt basis (see
 
     | Argument           |  Shortcut  |  Default            |  Description |
     |--------------------|------------|---------------------|--------------|
-    | `--full_precision`  |             | `False`                | Same as `--precision=fp32`|
     | `--weights <path>`   |            | `None`                | Path to weights file; use `--model stable-diffusion-1.4` instead |
     | `--laion400m`        | `-l`         | `False`               | Use older LAION400m weights; use `--model=laion400m` instead |
 
@@ -136,34 +130,20 @@ file should contain the startup options as you would type them on the
 command line (`--steps=10 --grid`), one argument per line, or a
 mixture of both using any of the accepted command switch formats:
 
-!!! example "my unmodified initialization file"
+!!! example ""
 
-    ```bash title="~/.invokeai" linenums="1"
-    # InvokeAI initialization file
-    # This is the InvokeAI initialization file, which contains command-line default values.
-    # Feel free to edit. If anything goes wrong, you can re-initialize this file by deleting
-    # or renaming it and then running invokeai-configure again.
-
-    # The --root option below points to the folder in which InvokeAI stores its models, configs and outputs.
-    --root="/Users/mauwii/invokeai"
-
-    # the --outdir option controls the default location of image files.
-    --outdir="/Users/mauwii/invokeai/outputs"
-
-    # You may place other  frequently-used startup commands here, one or more per line.
-    # Examples:
-    # --web --host=0.0.0.0
-    # --steps=20
-    # -Ak_euler_a -C10.0
+    ```bash
+    --web
+    --steps=28
+    --grid
+    -f 0.6 -C 11.0 -A k_euler_a
     ```
 
-!!! note
-
-    The  initialization file only accepts the command line arguments.
-    There are additional arguments that you can provide on the `invoke>` command
-    line (such as `-n` or `--iterations`) that cannot be entered into this file.
-    Also be alert for empty blank lines at the end of the file, which will cause
-    an arguments error at startup time.
+Note that the initialization file only accepts the command line arguments.
+There are additional arguments that you can provide on the `invoke>` command
+line (such as `-n` or `--iterations`) that cannot be entered into this file.
+Also be alert for empty blank lines at the end of the file, which will cause
+an arguments error at startup time.
 
 ## List of prompt arguments
 
@@ -214,20 +194,16 @@ Here are the invoke> command that apply to txt2img:
 | `--variation <float>`                     | `-v<float>`                               | `0.0`                                    | Add a bit of noise (0.0=none, 1.0=high) to the image in order to generate a series of variations. Usually used in combination with `-S<seed>` and `-n<int>` to generate a series a riffs on a starting image. See [Variations](./VARIATIONS.md). |
 | `--with_variations <pattern>`             |                                           | `None`                                   | Combine two or more variations. See [Variations](./VARIATIONS.md) for now to use this.                                                                                                                                                           |
 | `--save_intermediates <n>`                |                                           | `None`                                   | Save the image from every nth step into an "intermediates" folder inside the output directory                                                                                                                                                    |
-| `--h_symmetry_time_pct <float>`           |                                           | `None`                                   | Create symmetry along the X axis at the desired percent complete of the generation process. (Must be between 0.0 and 1.0; set to a very small number like 0.0001 for just after the first step of generation.)                                   |
-| `--v_symmetry_time_pct <float>`           |                                           | `None`                                   | Create symmetry along the Y axis at the desired percent complete of the generation process. (Must be between 0.0 and 1.0; set to a very small number like 0.0001 for just after the first step of generation.)                                   |
 
-!!! note
+Note that the width and height of the image must be multiples of 64. You can
+provide different values, but they will be rounded down to the nearest multiple
+of 64.
 
-    the width and height of the image must be multiples of 64. You can
-    provide different values, but they will be rounded down to the nearest multiple
-    of 64.
+### This is an example of img2img:
 
-!!! example "This is a example of img2img"
-
-    ```bash
-    invoke> waterfall and rainbow -I./vacation-photo.png -W640 -H480 --fit
-    ```
+```
+invoke> waterfall and rainbow -I./vacation-photo.png -W640 -H480 --fit
+```
 
 This will modify the indicated vacation photograph by making it more like the
 prompt. Results will vary greatly depending on what is in the image. We also ask
@@ -277,7 +253,7 @@ description of the part of the image to replace. For example, if you have an
 image of a breakfast plate with a bagel, toast and scrambled eggs, you can
 selectively mask the bagel and replace it with a piece of cake this way:
 
-```bash
+```
 invoke> a piece of cake -I /path/to/breakfast.png -tm bagel
 ```
 
@@ -289,26 +265,20 @@ are getting too much or too little masking you can adjust the threshold down (to
 get more mask), or up (to get less). In this example, by passing `-tm` a higher
 value, we are insisting on a more stringent classification.
 
-```bash
+```
 invoke> a piece of cake -I /path/to/breakfast.png -tm bagel 0.6
 ```
 
-### Custom Styles and Subjects
-
-You can load and use hundreds of community-contributed Textual
-Inversion models just by typing the appropriate trigger phrase. Please
-see [Concepts Library](CONCEPTS.md) for more details.
-
-## Other Commands
+# Other Commands
 
 The CLI offers a number of commands that begin with "!".
 
-### Postprocessing images
+## Postprocessing images
 
 To postprocess a file using face restoration or upscaling, use the `!fix`
 command.
 
-#### `!fix`
+### `!fix`
 
 This command runs a post-processor on a previously-generated image. It takes a
 PNG filename or path and applies your choice of the `-U`, `-G`, or `--embiggen`
@@ -335,21 +305,19 @@ Some examples:
     [1] outputs/img-samples/000017.4829112.gfpgan-00.png: !fix "outputs/img-samples/0000045.4829112.png" -s 50 -S  -W 512 -H 512 -C 7.5 -A k_lms -G 0.8
     ```
 
-#### `!mask`
+### !mask
 
 This command takes an image, a text prompt, and uses the `clipseg` algorithm to
 automatically generate a mask of the area that matches the text prompt. It is
 useful for debugging the text masking process prior to inpainting with the
 `--text_mask` argument. See [INPAINTING.md] for details.
 
-### Model selection and importation
+## Model selection and importation
 
-The CLI allows you to add new models on the fly, as well as to switch
-among them rapidly without leaving the script. There are several
-different model formats, each described in the [Model Installation
-Guide](../installation/050_INSTALLING_MODELS.md).
+The CLI allows you to add new models on the fly, as well as to switch among them
+rapidly without leaving the script.
 
-#### `!models`
+### !models
 
 This prints out a list of the models defined in `config/models.yaml'. The active
 model is bold-faced
@@ -357,12 +325,12 @@ model is bold-faced
 Example:
 
 <pre>
-inpainting-1.5            not loaded  Stable Diffusion inpainting model
-<b>stable-diffusion-1.5          active  Stable Diffusion v1.5</b>
-waifu-diffusion           not loaded  Waifu Diffusion v1.4
+laion400m                 not loaded  <no description>
+<b>stable-diffusion-1.4          active  Stable Diffusion v1.4</b>
+waifu-diffusion           not loaded  Waifu Diffusion v1.3
 </pre>
 
-#### `!switch <model>`
+### !switch <model>
 
 This quickly switches from one model to another without leaving the CLI script.
 `invoke.py` uses a memory caching system; once a model has been loaded,
@@ -371,30 +339,43 @@ Note how the second column of the `!models` table changes to `cached` after a
 model is first loaded, and that the long initialization step is not needed when
 loading a cached model.
 
-#### `!import_model <hugging_face_repo_ID>`
+<pre>
+invoke> !models
+laion400m                 not loaded  <no description>
+<b>stable-diffusion-1.4          cached  Stable Diffusion v1.4</b>
+waifu-diffusion               active  Waifu Diffusion v1.3
 
-This imports and installs a `diffusers`-style model that is stored on
-the [HuggingFace Web Site](https://huggingface.co). You can look up
-any [Stable Diffusion diffusers
-model](https://huggingface.co/models?library=diffusers) and install it
-with a command like the following:
+invoke> !switch waifu-diffusion
+>> Caching model stable-diffusion-1.4 in system RAM
+>> Loading waifu-diffusion from models/ldm/stable-diffusion-v1/model-epoch08-float16.ckpt
+   | LatentDiffusion: Running in eps-prediction mode
+   | DiffusionWrapper has 859.52 M params.
+   | Making attention of type 'vanilla' with 512 in_channels
+   | Working with z of shape (1, 4, 32, 32) = 4096 dimensions.
+   | Making attention of type 'vanilla' with 512 in_channels
+   | Using faster float16 precision
+>> Model loaded in 18.24s
+>> Max VRAM used to load the model: 2.17G 
+>> Current VRAM usage:2.17G
+>> Setting Sampler to k_lms
 
-```bash
-!import_model prompthero/openjourney
-```
+invoke> !models
+laion400m                 not loaded  <no description>
+stable-diffusion-1.4          cached  Stable Diffusion v1.4
+<b>waifu-diffusion               active  Waifu Diffusion v1.3</b>
 
-#### `!import_model <path/to/diffusers/directory>`
+invoke> !switch stable-diffusion-1.4
+>> Caching model waifu-diffusion in system RAM
+>> Retrieving model stable-diffusion-1.4 from system RAM cache
+>> Setting Sampler to k_lms
 
-If you have a copy of a `diffusers`-style model saved to disk, you can
-import it by passing the path to model's top-level directory.
+invoke> !models
+laion400m                 not loaded  <no description>
+<b>stable-diffusion-1.4          active  Stable Diffusion v1.4</b>
+waifu-diffusion               cached  Waifu Diffusion v1.3
+</pre>
 
-#### `!import_model <url>`
-
-For a `.ckpt` or `.safetensors` file, if you have a direct download
-URL for the file, you can provide it to `!import_model` and the file
-will be downloaded and installed for you.
-
-#### `!import_model <path/to/model/weights.ckpt>`
+### !import_model <path/to/model/weights>
 
 This command imports a new model weights file into InvokeAI, makes it available
 for image generation within the script, and writes out the configuration for the
@@ -414,14 +395,37 @@ below, the bold-faced text shows what the user typed in with the exception of
 the width, height and configuration file paths, which were filled in
 automatically.
 
-#### `!import_model <path/to/directory_of_models>`
+Example:
 
-If you provide the path of a directory that contains one or more
-`.ckpt` or `.safetensors` files, the CLI will scan the directory and
-interactively offer to import the models it finds there. Also see the
-`--autoconvert` command-line option.
+<pre>
+invoke> <b>!import_model models/ldm/stable-diffusion-v1/model-epoch08-float16.ckpt</b>
+>> Model import in process. Please enter the values needed to configure this model:
 
-#### `!edit_model <name_of_model>`
+Name for this model: <b>waifu-diffusion</b>
+Description of this model: <b>Waifu Diffusion v1.3</b>
+Configuration file for this model: <b>configs/stable-diffusion/v1-inference.yaml</b>
+Default image width: <b>512</b>
+Default image height: <b>512</b>
+>> New configuration:
+waifu-diffusion:
+  config: configs/stable-diffusion/v1-inference.yaml
+  description: Waifu Diffusion v1.3
+  height: 512
+  weights: models/ldm/stable-diffusion-v1/model-epoch08-float16.ckpt
+  width: 512
+OK to import [n]? <b>y</b>
+>> Caching model stable-diffusion-1.4 in system RAM
+>> Loading waifu-diffusion from models/ldm/stable-diffusion-v1/model-epoch08-float16.ckpt
+   | LatentDiffusion: Running in eps-prediction mode
+   | DiffusionWrapper has 859.52 M params.
+   | Making attention of type 'vanilla' with 512 in_channels
+   | Working with z of shape (1, 4, 32, 32) = 4096 dimensions.
+   | Making attention of type 'vanilla' with 512 in_channels
+   | Using faster float16 precision
+invoke> 
+</pre>
+
+###!edit_model <name_of_model>
 
 The `!edit_model` command can be used to modify a model that is already defined
 in `config/models.yaml`. Call it with the short name of the model you wish to
@@ -453,12 +457,17 @@ OK to import [n]? y
 ...
 </pre>
 
-### History processing
+======= invoke> !fix 000017.4829112.gfpgan-00.png --embiggen 3 ...lots of
+text... Outputs: [2] outputs/img-samples/000018.2273800735.embiggen-00.png: !fix
+"outputs/img-samples/000017.243781548.gfpgan-00.png" -s 50 -S 2273800735 -W 512
+-H 512 -C 7.5 -A k_lms --embiggen 3.0 0.75 0.25 ```
+
+## History processing
 
 The CLI provides a series of convenient commands for reviewing previous actions,
 retrieving them, modifying them, and re-running them.
 
-#### `!history`
+### !history
 
 The invoke script keeps track of all the commands you issue during a session,
 allowing you to re-run them. On Mac and Linux systems, it also writes the
@@ -470,22 +479,20 @@ during the session (Windows), or the most recent 1000 commands (Mac|Linux). You
 can then repeat a command by using the command `!NNN`, where "NNN" is the
 history line number. For example:
 
-!!! example ""
+```bash
+invoke> !history
+...
+[14] happy woman sitting under tree wearing broad hat and flowing garment
+[15] beautiful woman sitting under tree wearing broad hat and flowing garment
+[18] beautiful woman sitting under tree wearing broad hat and flowing garment -v0.2 -n6
+[20] watercolor of beautiful woman sitting under tree wearing broad hat and flowing garment -v0.2 -n6 -S2878767194
+[21] surrealist painting of beautiful woman sitting under tree wearing broad hat and flowing garment -v0.2 -n6 -S2878767194
+...
+invoke> !20
+invoke> watercolor of beautiful woman sitting under tree wearing broad hat and flowing garment -v0.2 -n6 -S2878767194
+```
 
-    ```bash
-    invoke> !history
-    ...
-    [14] happy woman sitting under tree wearing broad hat and flowing garment
-    [15] beautiful woman sitting under tree wearing broad hat and flowing garment
-    [18] beautiful woman sitting under tree wearing broad hat and flowing garment -v0.2 -n6
-    [20] watercolor of beautiful woman sitting under tree wearing broad hat and flowing garment -v0.2 -n6 -S2878767194
-    [21] surrealist painting of beautiful woman sitting under tree wearing broad hat and flowing garment -v0.2 -n6 -S2878767194
-    ...
-    invoke> !20
-    invoke> watercolor of beautiful woman sitting under tree wearing broad hat and flowing garment -v0.2 -n6 -S2878767194
-    ```
-
-####`!fetch`
+### !fetch
 
 This command retrieves the generation parameters from a previously generated
 image and either loads them into the command line (Linux|Mac), or prints them
@@ -495,36 +502,33 @@ a folder with image png files, and wildcard \*.png to retrieve the dream command
 used to generate the images, and save them to a file commands.txt for further
 processing.
 
-!!! example "load the generation command for a single png file"
+This example loads the generation command for a single png file:
 
-    ```bash
-    invoke> !fetch 0000015.8929913.png
-    # the script returns the next line, ready for editing and running:
-    invoke> a fantastic alien landscape -W 576 -H 512 -s 60 -A plms -C 7.5
-    ```
+```bash
+invoke> !fetch 0000015.8929913.png
+# the script returns the next line, ready for editing and running:
+invoke> a fantastic alien landscape -W 576 -H 512 -s 60 -A plms -C 7.5
+```
 
-!!! example "fetch the generation commands from a batch of files and store them into `selected.txt`"
+This one fetches the generation commands from a batch of files and stores them
+into `selected.txt`:
 
-    ```bash
-    invoke> !fetch outputs\selected-imgs\*.png selected.txt
-    ```
+```bash
+invoke> !fetch outputs\selected-imgs\*.png selected.txt
+```
 
-#### `!replay`
+### !replay
 
 This command replays a text file generated by !fetch or created manually
 
-!!! example
+```
+invoke> !replay outputs\selected-imgs\selected.txt
+```
 
-    ```bash
-    invoke> !replay outputs\selected-imgs\selected.txt
-    ```
+Note that these commands may behave unexpectedly if given a PNG file that was
+not generated by InvokeAI.
 
-!!! note
-
-    These commands may behave unexpectedly if given a PNG file that was
-    not generated by InvokeAI.
-
-#### `!search <search string>`
+### !search <search string>
 
 This is similar to !history but it only returns lines that contain
 `search string`. For example:
@@ -534,7 +538,7 @@ invoke> !search surreal
 [21] surrealist painting of beautiful woman sitting under tree wearing broad hat and flowing garment -v0.2 -n6 -S2878767194
 ```
 
-#### `!clear`
+### `!clear`
 
 This clears the search history from memory and disk. Be advised that this
 operation is irreversible and does not issue any warnings!

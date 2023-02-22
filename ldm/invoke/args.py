@@ -81,42 +81,29 @@ with metadata_from_png():
 """
 
 import argparse
-import base64
-import copy
-import functools
-import hashlib
-import json
-import os
+from argparse import Namespace, RawTextHelpFormatter
 import pydoc
+import json
+import hashlib
+import os
 import re
-import shlex
 import sys
-from argparse import Namespace
-from pathlib import Path
-
-import ldm.invoke
+import shlex
+import copy
+import base64
+import functools
 import ldm.invoke.pngwriter
-from ldm.invoke.conditioning import split_weighted_subprompts
-
-from ldm.invoke.globals import Globals
-
-APP_ID = ldm.invoke.__app_id__
-APP_NAME = ldm.invoke.__app_name__
-APP_VERSION = ldm.invoke.__version__
+from ldm.invoke.prompt_parser import split_weighted_subprompts
 
 SAMPLER_CHOICES = [
     'ddim',
     'k_dpm_2_a',
     'k_dpm_2',
-    'k_dpmpp_2_a',
-    'k_dpmpp_2',
     'k_euler_a',
     'k_euler',
     'k_heun',
     'k_lms',
     'plms',
-    # diffusers:
-    "pndm",
 ]
 
 PRECISION_CHOICES = [
@@ -125,6 +112,11 @@ PRECISION_CHOICES = [
     'autocast',
     'float16',
 ]
+
+# is there a way to pick this up during git commits?
+APP_ID      = 'invoke-ai/InvokeAI'
+APP_VERSION = 'v2.1.2'
+INITFILE = os.path.expanduser('~/.invokeai')
 
 class ArgFormatter(argparse.RawTextHelpFormatter):
         # use defined argument order to display usage
@@ -177,28 +169,11 @@ class Args(object):
         '''Parse the shell switches and store.'''
         try:
             sysargs = sys.argv[1:]
-            # pre-parse before we do any initialization to get root directory
-            # and intercept --version request
-            switches = self._arg_parser.parse_args(sysargs)
-            if switches.version:
-                print(f'{ldm.invoke.__app_name__} {ldm.invoke.__version__}')
-                sys.exit(0)
-
-            print('* Initializing, be patient...')
-            Globals.root = Path(os.path.abspath(switches.root_dir or Globals.root))
-            Globals.try_patchmatch = switches.patchmatch
-
-            # now use root directory to find the init file
-            initfile = os.path.expanduser(os.path.join(Globals.root,Globals.initfile))
-            legacyinit = os.path.expanduser('~/.invokeai')
-            if os.path.exists(initfile):
-                print(f'>> Initialization file {initfile} found. Loading...',file=sys.stderr)
-                sysargs.insert(0,f'@{initfile}')
-            elif os.path.exists(legacyinit):
-                print(f'>> WARNING: Old initialization file found at {legacyinit}. This location is deprecated. Please move it to {Globals.root}/invokeai.init.')
-                sysargs.insert(0,f'@{legacyinit}')
-            Globals.log_tokenization = self._arg_parser.parse_args(sysargs).log_tokenization
-
+            if os.path.exists(INITFILE):
+                print(f'>> Initialization file {INITFILE} found. Loading...')
+                sysargs.insert(0,f'@{INITFILE}')
+            else:
+                print(f'>> Initialization file {INITFILE} not found. Applying default settings...')
             self._arg_switches = self._arg_parser.parse_args(sysargs)
             return self._arg_switches
         except Exception as e:
@@ -231,8 +206,7 @@ class Args(object):
                     switches = ''
         try:
             self._cmd_switches = self._cmd_parser.parse_args(shlex.split(switches,comments=True))
-            if not getattr(self._cmd_switches,'prompt'):
-                setattr(self._cmd_switches,'prompt',prompt)
+            setattr(self._cmd_switches,'prompt',prompt)
             return self._cmd_switches
         except:
             return None
@@ -273,17 +247,13 @@ class Args(object):
             switches.append('--seamless')
         if a['hires_fix']:
             switches.append('--hires_fix')
-        if a['h_symmetry_time_pct']:
-            switches.append(f'--h_symmetry_time_pct {a["h_symmetry_time_pct"]}')
-        if a['v_symmetry_time_pct']:
-            switches.append(f'--v_symmetry_time_pct {a["v_symmetry_time_pct"]}')
 
         # img2img generations have parameters relevant only to them and have special handling
         if a['init_img'] and len(a['init_img'])>0:
             switches.append(f'-I {a["init_img"]}')
             switches.append(f'-A {a["sampler_name"]}')
             if a['fit']:
-                switches.append('--fit')
+                switches.append(f'--fit')
             if a['init_mask'] and len(a['init_mask'])>0:
                 switches.append(f'-M {a["init_mask"]}')
             if a['init_color'] and len(a['init_color'])>0:
@@ -291,7 +261,7 @@ class Args(object):
             if a['strength'] and a['strength']>0:
                 switches.append(f'-f {a["strength"]}')
             if a['inpaint_replace']:
-                switches.append('--inpaint_replace')
+                switches.append(f'--inpaint_replace')
             if a['text_mask']:
                 switches.append(f'-tm {" ".join([str(u) for u in a["text_mask"]])}')
         else:
@@ -316,8 +286,6 @@ class Args(object):
             switches.append(f'--embiggen {" ".join([str(u) for u in a["embiggen"]])}')
         if a['embiggen_tiles']:
             switches.append(f'--embiggen_tiles {" ".join([str(u) for u in a["embiggen_tiles"]])}')
-        if a['embiggen_strength']:
-            switches.append(f'--embiggen_strength {a["embiggen_strength"]}')
 
         # outpainting parameters
         if a['out_direction']:
@@ -359,7 +327,7 @@ class Args(object):
 
         if not hasattr(cmd_switches,name) and not hasattr(arg_switches,name):
             raise AttributeError
-
+        
         value_arg,value_cmd = (None,None)
         try:
             value_cmd = getattr(cmd_switches,name)
@@ -395,17 +363,6 @@ class Args(object):
             new_dict[k] = value2 if value2 is not None else value1
         return new_dict
 
-    def _create_init_file(self,initfile:str):
-        with open(initfile, mode='w', encoding='utf-8') as f:
-            f.write('''# InvokeAI initialization file
-# Put frequently-used startup commands here, one or more per line
-# Examples:
-# --web --host=0.0.0.0
-# --steps 20
-# -Ak_euler_a -C10.0
-'''
-            )
-
     def _create_arg_parser(self):
         '''
         This defines all the arguments used on the command line when you launch
@@ -415,7 +372,7 @@ class Args(object):
             description=
             """
             Generate images using Stable Diffusion.
-            Use --web to launch the web interface.
+            Use --web to launch the web interface. 
             Use --from_file to load prompts from a file path or standard input ("-").
             Otherwise you will be dropped into an interactive command prompt (type -h for help.)
             Other command-line arguments are defaults that can usually be overridden
@@ -423,7 +380,6 @@ class Args(object):
             """,
             fromfile_prefix_chars='@',
         )
-        general_group    = parser.add_argument_group('General')
         model_group      = parser.add_argument_group('Model selection')
         file_group       = parser.add_argument_group('Input/output')
         web_server_group = parser.add_argument_group('Web server')
@@ -433,16 +389,6 @@ class Args(object):
 
         deprecated_group.add_argument('--laion400m')
         deprecated_group.add_argument('--weights') # deprecated
-        general_group.add_argument(
-            '--version','-V',
-            action='store_true',
-            help='Print InvokeAI version number'
-        )
-        model_group.add_argument(
-            '--root_dir',
-            default=None,
-            help='Path to directory containing "models", "outputs" and "configs". If not present will read from environment variable INVOKEAI_ROOT. Defaults to ~/invokeai.',
-        )
         model_group.add_argument(
             '--config',
             '-c',
@@ -454,12 +400,6 @@ class Args(object):
         model_group.add_argument(
             '--model',
             help='Indicates which diffusion model to load (defaults to "default" stanza in configs/models.yaml)',
-        )
-        model_group.add_argument(
-            '--weight_dirs',
-            nargs='+',
-            type=str,
-            help='List of one or more directories that will be auto-scanned for new model weights to import',
         )
         model_group.add_argument(
             '--png_compression','-z',
@@ -490,25 +430,6 @@ class Args(object):
             help='Force free gpu memory before final decoding',
         )
         model_group.add_argument(
-            '--sequential_guidance',
-            dest='sequential_guidance',
-            action='store_true',
-            help="Calculate guidance in serial instead of in parallel, lowering memory requirement "
-                 "at the expense of speed",
-        )
-        model_group.add_argument(
-            '--xformers',
-            action=argparse.BooleanOptionalAction,
-            default=True,
-            help='Enable/disable xformers support (default enabled if installed)',
-        )
-        model_group.add_argument(
-            "--always_use_cpu",
-            dest="always_use_cpu",
-            action="store_true",
-            help="Force use of CPU even if GPU is available"
-        )
-        model_group.add_argument(
             '--precision',
             dest='precision',
             type=str,
@@ -518,38 +439,9 @@ class Args(object):
             default='auto',
         )
         model_group.add_argument(
-            '--ckpt_convert',
-            action=argparse.BooleanOptionalAction,
-            dest='ckpt_convert',
-            default=False,
-            help='Load legacy ckpt files as diffusers. Pass --no-ckpt-convert to inhibit this behavior',
-        )
-        model_group.add_argument(
-            '--internet',
-            action=argparse.BooleanOptionalAction,
-            dest='internet_available',
-            default=True,
-            help='Indicate whether internet is available for just-in-time model downloading (default: probe automatically).',
-        )
-        model_group.add_argument(
-            '--nsfw_checker',
             '--safety_checker',
-            action=argparse.BooleanOptionalAction,
-            dest='safety_checker',
-            default=False,
-            help='Check for and blur potentially NSFW images. Use --no-nsfw_checker to disable.',
-        )
-        model_group.add_argument(
-            '--autoconvert',
-            default=None,
-            type=str,
-            help='Check the indicated directory for .ckpt weights files at startup and import as optimized diffuser models',
-        )
-        model_group.add_argument(
-            '--patchmatch',
-            action=argparse.BooleanOptionalAction,
-            default=True,
-            help='Load the patchmatch extension for outpainting. Use --no-patchmatch to disable.',
+            action='store_true',
+            help='Check for and blur potentially NSFW images',
         )
         file_group.add_argument(
             '--from_file',
@@ -614,12 +506,6 @@ class Args(object):
             default='k_lms',
         )
         render_group.add_argument(
-            '--log_tokenization',
-            '-t',
-            action='store_true',
-            help='shows how the prompt is split into tokens'
-        )
-        render_group.add_argument(
             '-f',
             '--strength',
             type=float,
@@ -640,29 +526,9 @@ class Args(object):
             help='generate a grid'
         )
         render_group.add_argument(
-            '--embedding_directory',
             '--embedding_path',
-            dest='embedding_path',
-            default='embeddings',
             type=str,
-            help='Path to a directory containing .bin and/or .pt files, or a single .bin/.pt file. You may use subdirectories. (default is ROOTDIR/embeddings)'
-        )
-        render_group.add_argument(
-            '--embeddings',
-            action=argparse.BooleanOptionalAction,
-            default=True,
-            help='Enable embedding directory (default). Use --no-embeddings to disable.',
-        )
-        render_group.add_argument(
-            '--enable_image_debugging',
-            action='store_true',
-            help='Generates debugging image to display'
-        )
-        render_group.add_argument(
-            '--karras_max',
-            type=int,
-            default=None,
-            help="control the point at which the K* samplers will shift from using the Karras noise schedule (good for low step counts) to the LatentDiffusion noise schedule (good for high step counts). Set to 0 to use LatentDiffusion for all step values, and to a high value (e.g. 1000) to use Karras for all step values. [29]."
+            help='Path to a pre-trained embedding manager checkpoint - can only be set on command line',
         )
         # Restoration related args
         postprocessing_group.add_argument(
@@ -682,12 +548,6 @@ class Args(object):
             type=int,
             default=400,
             help='Tile size for background sampler, 0 for no tile during testing. Default: 400.',
-        )
-        postprocessing_group.add_argument(
-            '--esrgan_denoise_str',
-            type=float,
-            default=0.75,
-            help='esrgan denoise str. 0 is no denoise, 1 is max denoise.  Default: 0.75',
         )
         postprocessing_group.add_argument(
             '--gfpgan_model_path',
@@ -731,18 +591,6 @@ class Args(object):
             help='Web server: Port to listen on'
         )
         web_server_group.add_argument(
-            '--certfile',
-            type=str,
-            default=None,
-            help='Web server: Path to certificate file to use for SSL. Use together with --keyfile'
-        )
-        web_server_group.add_argument(
-            '--keyfile',
-            type=str,
-            default=None,
-            help='Web server: Path to private key file to use for SSL. Use together with --certfile'
-        )
-        web_server_group.add_argument(
             '--gui',
             dest='gui',
             action='store_true',
@@ -763,35 +611,21 @@ class Args(object):
                 !fix applies upscaling/facefixing to a previously-generated image.
                 invoke> !fix 0000045.4829112.png -G1 -U4 -ft codeformer
 
-            *embeddings*
-                invoke> !triggers     -- return all trigger phrases contained in loaded embedding files
-
             *History manipulation*
-            !fetch retrieves the command used to generate an earlier image. Provide
-            a directory wildcard and the name of a file to write and all the commands
-            used to generate the images in the directory will be written to that file.
+            !fetch retrieves the command used to generate an earlier image.
                 invoke> !fetch 0000015.8929913.png
                 invoke> a fantastic alien landscape -W 576 -H 512 -s 60 -A plms -C 7.5
-                invoke> !fetch /path/to/images/*.png prompts.txt
-
-            !replay /path/to/prompts.txt
-            Replays all the prompts contained in the file prompts.txt.
 
             !history lists all the commands issued during the current session.
 
             !NN retrieves the NNth command from the history
 
             *Model manipulation*
-            !models                                   -- list models in configs/models.yaml
-            !switch <model_name>                      -- switch to model named <model_name>
-            !import_model /path/to/weights/file.ckpt  -- adds a .ckpt model to your config
-            !import_model /path/to/weights/           -- interactively import models from a directory
-            !import_model http://path_to_model.ckpt   -- downloads and adds a .ckpt model to your config
-            !import_model hakurei/waifu-diffusion     -- downloads and adds a diffusers model to your config
-            !optimize_model <model_name>              -- converts a .ckpt model to a diffusers model
-            !convert_model /path/to/weights/file.ckpt -- converts a .ckpt file path to a diffusers model
-            !edit_model <model_name>                  -- edit a model's description
-            !del_model <model_name>                   -- delete a model
+            !models                                 -- list models in configs/models.yaml
+            !switch <model_name>                    -- switch to model named <model_name>
+            !import_model path/to/weights/file.ckpt -- adds a model to your config
+            !edit_model <model_name>                -- edit a model's description
+            !del_model <model_name>                 -- delete a model
             """
         )
         render_group     = parser.add_argument_group('General rendering')
@@ -856,18 +690,6 @@ class Args(object):
             default=0.0,
             type=float,
             help='Perlin noise scale (0.0 - 1.0) - add perlin noise to the initialization instead of the usual gaussian noise.',
-        )
-        render_group.add_argument(
-            '--h_symmetry_time_pct',
-            default=None,
-            type=float,
-            help='Horizontal symmetry point (0.0 - 1.0) - apply horizontal symmetry at this point in image generation.',
-        )
-        render_group.add_argument(
-            '--v_symmetry_time_pct',
-            default=None,
-            type=float,
-            help='Vertical symmetry point (0.0 - 1.0) - apply vertical symmetry at this point in image generation.',
         )
         render_group.add_argument(
             '--fnformat',
@@ -1093,13 +915,6 @@ class Args(object):
             help='For embiggen, provide list of tiles to process and replace onto the image e.g. `1 3 5`.',
             default=None,
         )
-        postprocessing_group.add_argument(
-            '--embiggen_strength',
-            '-embiggen_strength',
-            type=float,
-            help='The strength of the embiggen img2img step, defaults to 0.4',
-            default=None,
-        )
         special_effects_group.add_argument(
             '--seamless',
             action='store_true',
@@ -1142,7 +957,7 @@ class Args(object):
         return parser
 
 def format_metadata(**kwargs):
-    print('format_metadata() is deprecated. Please use metadata_dumps()')
+    print(f'format_metadata() is deprecated. Please use metadata_dumps()')
     return metadata_dumps(kwargs)
 
 def metadata_dumps(opt,
@@ -1153,7 +968,7 @@ def metadata_dumps(opt,
     Given an Args object, returns a dict containing the keys and
     structure of the proposed stable diffusion metadata standard
     https://github.com/lstein/stable-diffusion/discussions/392
-    This is intended to be turned into JSON and stored in the
+    This is intended to be turned into JSON and stored in the 
     "sd
     '''
 
@@ -1162,8 +977,8 @@ def metadata_dumps(opt,
         'model'       : 'stable diffusion',
         'model_id'    : opt.model,
         'model_hash'  : model_hash,
-        'app_id'      : ldm.invoke.__app_id__,
-        'app_version' : ldm.invoke.__version__,
+        'app_id'      : APP_ID,
+        'app_version' : APP_VERSION,
     }
 
     # # add some RFC266 fields that are generated internally, and not as
@@ -1175,8 +990,7 @@ def metadata_dumps(opt,
     # remove any image keys not mentioned in RFC #266
     rfc266_img_fields = ['type','postprocessing','sampler','prompt','seed','variations','steps',
                          'cfg_scale','threshold','perlin','step_number','width','height','extra','strength','seamless'
-                         'init_img','init_mask','facetool','facetool_strength','upscale','h_symmetry_time_pct',
-                         'v_symmetry_time_pct']
+                         'init_img','init_mask','facetool','facetool_strength','upscale']
     rfc_dict ={}
 
     for item in image_dict.items():
@@ -1210,7 +1024,7 @@ def metadata_dumps(opt,
         rfc_dict.pop('strength')
 
     if len(seeds)==0 and opt.seed:
-        seeds=[opt.seed]
+        seeds=[seed]
 
     if opt.grid:
         images = []
@@ -1237,7 +1051,7 @@ def args_from_png(png_file_path) -> list[Args]:
         meta = ldm.invoke.pngwriter.retrieve_metadata(png_file_path)
     except AttributeError:
         return [legacy_metadata_load({},png_file_path)]
-
+    
     try:
         return metadata_loads(meta)
     except:
@@ -1251,7 +1065,7 @@ def metadata_from_png(png_file_path) -> Args:
     returns a single Args object, not multiple.
     '''
     args_list = args_from_png(png_file_path)
-    return args_list[0] if len(args_list)>0 else Args()  # empty args
+    return args_list[0]
 
 def dream_cmd_from_png(png_file_path):
     opt = metadata_from_png(png_file_path)
@@ -1281,7 +1095,7 @@ def metadata_loads(metadata) -> list:
             opt = Args()
             opt._cmd_switches = Namespace(**image)
             results.append(opt)
-    except Exception:
+    except Exception as e:
         import sys, traceback
         print('>> could not read metadata',file=sys.stderr)
         print(traceback.format_exc(), file=sys.stderr)
@@ -1336,4 +1150,4 @@ def legacy_metadata_load(meta,pathname) -> Args:
             opt.prompt = ''
             opt.seed = 0
     return opt
-
+            

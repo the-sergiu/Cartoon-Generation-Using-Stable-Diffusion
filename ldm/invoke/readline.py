@@ -12,19 +12,16 @@ import os
 import re
 import atexit
 from ldm.invoke.args import Args
-from ldm.invoke.concepts_lib import HuggingFaceConceptsLibrary
-from ldm.invoke.globals import Globals
 
 # ---------------readline utilities---------------------
 try:
     import readline
     readline_available = True
-except (ImportError,ModuleNotFoundError) as e:
-    print(f'** An error occurred when loading the readline module: {str(e)}')
+except (ImportError,ModuleNotFoundError):
     readline_available = False
 
 IMG_EXTENSIONS     = ('.png','.jpg','.jpeg','.PNG','.JPG','.JPEG','.gif','.GIF')
-WEIGHT_EXTENSIONS  = ('.ckpt','.vae','.safetensors')
+WEIGHT_EXTENSIONS  = ('.ckpt','.bae')
 TEXT_EXTENSIONS  = ('.txt','.TXT')
 CONFIG_EXTENSIONS  = ('.yaml','.yml')
 COMMANDS = (
@@ -53,28 +50,23 @@ COMMANDS = (
     '--codeformer_fidelity','-cf',
     '--upscale','-U',
     '-save_orig','--save_original',
+    '--skip_normalize','-x',
     '--log_tokenization','-t',
     '--hires_fix',
     '--inpaint_replace','-r',
     '--png_compression','-z',
     '--text_mask','-tm',
-    '--h_symmetry_time_pct',
-    '--v_symmetry_time_pct',
     '!fix','!fetch','!replay','!history','!search','!clear',
-    '!models','!switch','!import_model','!optimize_model','!convert_model','!edit_model','!del_model',
-    '!mask','!triggers',
+    '!models','!switch','!import_model','!edit_model','!del_model',
+    '!mask',
     )
 MODEL_COMMANDS = (
     '!switch',
     '!edit_model',
     '!del_model',
     )
-CKPT_MODEL_COMMANDS = (
-    '!optimize_model',
-)
 WEIGHT_COMMANDS = (
     '!import_model',
-    '!convert_model',
     )
 IMG_PATH_COMMANDS = (
     '--outdir[=\s]',
@@ -91,23 +83,20 @@ IMG_FILE_COMMANDS=(
     '--init_color[=\s]',
     '--embedding_path[=\s]',
     )
-
 path_regexp   = '(' + '|'.join(IMG_PATH_COMMANDS+IMG_FILE_COMMANDS) + ')\s*\S*$'
 weight_regexp = '(' + '|'.join(WEIGHT_COMMANDS) + ')\s*\S*$'
 text_regexp = '(' + '|'.join(TEXT_PATH_COMMANDS) + ')\s*\S*$'
 
 class Completer(object):
-    def __init__(self, options, models={}):
+    def __init__(self, options, models=[]):
         self.options     = sorted(options)
-        self.models      = models
+        self.models      = sorted(models)
         self.seeds       = set()
         self.matches     = list()
         self.default_dir = None
         self.linebuffer  = None
         self.auto_history_active = True
         self.extensions = None
-        self.concepts = None
-        self.embedding_terms = set()
         return
 
     def complete(self, text, state):
@@ -122,35 +111,22 @@ class Completer(object):
             # extensions defined, so go directly into path completion mode
             if self.extensions is not None:
                 self.matches = self._path_completions(text, state, self.extensions)
-
+                
             # looking for an image file
             elif re.search(path_regexp,buffer):
                 do_shortcut = re.search('^'+'|'.join(IMG_FILE_COMMANDS),buffer)
                 self.matches = self._path_completions(text, state, IMG_EXTENSIONS,shortcut_ok=do_shortcut)
 
             # looking for a seed
-            elif re.search('(-S\s*|--seed[=\s])\d*$',buffer):
+            elif re.search('(-S\s*|--seed[=\s])\d*$',buffer): 
                 self.matches= self._seed_completions(text,state)
-
-            # looking for an embedding concept
-            elif re.search('<[\w-]*$',buffer):
-                self.matches= self._concept_completions(text,state)
 
             # looking for a model
             elif re.match('^'+'|'.join(MODEL_COMMANDS),buffer):
                 self.matches= self._model_completions(text, state)
 
-            # looking for a ckpt model
-            elif re.match('^'+'|'.join(CKPT_MODEL_COMMANDS),buffer):
-                self.matches= self._model_completions(text, state, ckpt_only=True)
-
             elif re.search(weight_regexp,buffer):
-                self.matches = self._path_completions(
-                    text,
-                    state,
-                    WEIGHT_EXTENSIONS,
-                    default_dir=Globals.root,
-                )
+                self.matches = self._path_completions(text, state, WEIGHT_EXTENSIONS)
 
             elif re.search(text_regexp,buffer):
                 self.matches = self._path_completions(text, state, TEXT_EXTENSIONS)
@@ -211,9 +187,6 @@ class Completer(object):
     def set_default_dir(self, path):
         self.default_dir=path
 
-    def set_options(self,options):
-        self.options = options
-
     def get_line(self,index):
         try:
             line = self.get_history_item(index)
@@ -237,7 +210,7 @@ class Completer(object):
         if h_len < 1:
             print('<empty history>')
             return
-
+        
         for i in range(0,h_len):
             line = self.get_history_item(i+1)
             if match and match not in line:
@@ -252,11 +225,17 @@ class Completer(object):
         self.linebuffer = line
         readline.redisplay()
 
-    def update_models(self,models:dict)->None:
+    def add_model(self,model_name:str)->None:
         '''
-        update our list of models
+        add a model name to the completion list
         '''
-        self.models = models
+        self.models.append(model_name)
+
+    def del_model(self,model_name:str)->None:
+        '''
+        removes a model name from the completion list
+        '''
+        self.models.remove(model_name)
 
     def _seed_completions(self, text, state):
         m = re.search('(-S\s?|--seed[=\s]?)(\d*)',text)
@@ -274,31 +253,7 @@ class Completer(object):
         matches.sort()
         return matches
 
-    def add_embedding_terms(self, terms:list[str]):
-        self.embedding_terms = set(terms)
-        if self.concepts:
-            self.embedding_terms.update(set(self.concepts.list_concepts()))
-
-    def _concept_completions(self, text, state):
-        if self.concepts is None:
-            # cache Concepts() instance so we can check for updates in concepts_list during runtime.
-            self.concepts = HuggingFaceConceptsLibrary()
-            self.embedding_terms.update(set(self.concepts.list_concepts()))
-        else:
-            self.embedding_terms.update(set(self.concepts.list_concepts()))
-
-        partial = text[1:]  # this removes the leading '<'
-        if len(partial) == 0:
-            return list(self.embedding_terms)  # whole dump - think if user wants this!
-
-        matches = list()
-        for concept in self.embedding_terms:
-            if concept.startswith(partial):
-                matches.append(f'<{concept}>')
-        matches.sort()
-        return matches
-
-    def _model_completions(self, text, state, ckpt_only=False):
+    def _model_completions(self, text, state):
         m = re.search('(!switch\s+)(\w*)',text)
         if m:
             switch  = m.groups()[0]
@@ -308,11 +263,6 @@ class Completer(object):
             partial = text
         matches = list()
         for s in self.models:
-            format = self.models[s]['format']
-            if format == 'vae':
-                continue
-            if ckpt_only and format != 'ckpt':
-                continue
             if s.startswith(partial):
                 matches.append(switch+s)
         matches.sort()
@@ -324,7 +274,7 @@ class Completer(object):
             readline.redisplay()
             self.linebuffer = None
 
-    def _path_completions(self, text, state, extensions, shortcut_ok=True, default_dir:str=''):
+    def _path_completions(self, text, state, extensions, shortcut_ok=True):
         # separate the switch from the partial path
         match = re.search('^(-\w|--\w+=?)(.*)',text)
         if match is None:
@@ -332,8 +282,8 @@ class Completer(object):
             partial_path = text
         else:
             switch,partial_path  = match.groups()
-
         partial_path = partial_path.lstrip()
+
 
         matches = list()
         path = os.path.expanduser(partial_path)
@@ -343,7 +293,7 @@ class Completer(object):
         elif os.path.dirname(path) != '':
             dir = os.path.dirname(path)
         else:
-            dir = default_dir if os.path.exists(default_dir)  else ''
+            dir = ''
             path= os.path.join(dir,path)
 
         dir_list = os.listdir(dir or '.')
@@ -358,7 +308,7 @@ class Completer(object):
             if not (node.endswith(extensions) or os.path.isdir(full_path)):
                 continue
 
-            if path and not full_path.startswith(path):
+            if not full_path.startswith(path):
                 continue
 
             if switch is None:
@@ -379,7 +329,7 @@ class DummyCompleter(Completer):
     def __init__(self,options):
         super().__init__(options)
         self.history = list()
-
+        
     def add_history(self,line):
         self.history.append(line)
 
@@ -397,21 +347,6 @@ class DummyCompleter(Completer):
 
     def set_line(self,line):
         print(f'# {line}')
-
-def generic_completer(commands:list)->Completer:
-    if readline_available:
-        completer = Completer(commands,[])
-        readline.set_completer(completer.complete)
-        readline.set_pre_input_hook(completer._pre_input_hook)
-        readline.set_completer_delims(' ')
-        readline.parse_and_bind('tab: complete')
-        readline.parse_and_bind('set print-completions-horizontally off')
-        readline.parse_and_bind('set page-completions on')
-        readline.parse_and_bind('set skip-completed-text on')
-        readline.parse_and_bind('set show-all-if-ambiguous on')
-    else:
-        completer = DummyCompleter(commands)
-    return completer
 
 def get_completer(opt:Args, models=[])->Completer:
     if readline_available:
@@ -434,20 +369,12 @@ def get_completer(opt:Args, models=[])->Completer:
         readline.parse_and_bind('set skip-completed-text on')
         readline.parse_and_bind('set show-all-if-ambiguous on')
 
-        outdir = os.path.expanduser(opt.outdir)
-        if os.path.isabs(outdir):
-            histfile = os.path.join(outdir,'.invoke_history')
-        else:
-            histfile = os.path.join(Globals.root, outdir, '.invoke_history')
+        histfile = os.path.join(os.path.expanduser(opt.outdir), '.invoke_history')
         try:
             readline.read_history_file(histfile)
             readline.set_history_length(1000)
         except FileNotFoundError:
             pass
-        except OSError: # file likely corrupted
-            newname = f'{histfile}.old'
-            print(f'## Your history file {histfile} couldn\'t be loaded and may be corrupted. Renaming it to {newname}')
-            os.replace(histfile,newname)
         atexit.register(readline.write_history_file, histfile)
 
     else:

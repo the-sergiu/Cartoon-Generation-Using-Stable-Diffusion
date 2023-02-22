@@ -1,19 +1,17 @@
 """omnibus module to be used with the runwayml 9-channel custom inpainting model"""
 
 import torch
-from PIL import Image, ImageOps
+import numpy as  np
 from einops import repeat
-
+from PIL import Image, ImageOps
 from ldm.invoke.devices import choose_autocast
+from ldm.invoke.generator.base import downsampling
 from ldm.invoke.generator.img2img import Img2Img
 from ldm.invoke.generator.txt2img import Txt2Img
-
 
 class Omnibus(Img2Img,Txt2Img):
     def __init__(self, model, precision):
         super().__init__(model, precision)
-        self.pil_mask = None
-        self.pil_image = None
 
     def get_make_image(
             self,
@@ -31,7 +29,6 @@ class Omnibus(Img2Img,Txt2Img):
             step_callback=None,
             threshold=0.0,
             perlin=0.0,
-            mask_blur_radius: int = 8,
             **kwargs):
         """
         Returns a function returning an image derived from the prompt and the initial image
@@ -40,29 +37,23 @@ class Omnibus(Img2Img,Txt2Img):
         self.perlin = perlin
         num_samples = 1
 
-        print('DEBUG: IN OMNIBUS')
-
         sampler.make_schedule(
             ddim_num_steps=steps, ddim_eta=ddim_eta, verbose=False
         )
 
         if isinstance(init_image, Image.Image):
-            self.pil_image = init_image
             if init_image.mode != 'RGB':
                 init_image = init_image.convert('RGB')
             init_image = self._image_to_tensor(init_image)
 
         if isinstance(mask_image, Image.Image):
-            self.pil_mask = mask_image
+            mask_image = self._image_to_tensor(ImageOps.invert(mask_image).convert('L'),normalize=False)
 
-            mask_image = ImageChops.multiply(mask_image.convert('L'), self.pil_image.split()[-1])
-            mask_image = self._image_to_tensor(ImageOps.invert(mask_image), normalize=False)
-
-        self.mask_blur_radius = mask_blur_radius
+        t_enc = steps
 
         if init_image is not None and mask_image is not None: # inpainting
             masked_image = init_image * (1 - mask_image)  # masked image is the image masked by mask - masked regions zero
-
+            
         elif init_image is not None: # img2img
             scope = choose_autocast(self.precision)
 
@@ -99,7 +90,7 @@ class Omnibus(Img2Img,Txt2Img):
                         device=model.device,
                         num_samples=num_samples,
                     )
-
+                    
                     c = model.cond_stage_model.encode(batch["txt"])
                     c_cat = list()
                     for ck in model.concat_keys:
@@ -160,16 +151,3 @@ class Omnibus(Img2Img,Txt2Img):
             height = self.init_latent.shape[2]
             width = self.init_latent.shape[3]
         return Txt2Img.get_noise(self,width,height)
-
-
-    def sample_to_image(self, samples)->Image.Image:
-        gen_result = super().sample_to_image(samples).convert('RGB')
-
-        if self.pil_image is None or self.pil_mask is None:
-            return gen_result
-        if self.pil_image.size != self.pil_mask.size:
-            return gen_result
-
-        corrected_result = super(Img2Img, self).repaste_and_color_correct(gen_result, self.pil_image, self.pil_mask, self.mask_blur_radius)
-
-        return corrected_result

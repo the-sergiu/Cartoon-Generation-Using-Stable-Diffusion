@@ -1,11 +1,9 @@
 import torch
 import warnings
 import numpy as np
-import os
 
-from ldm.invoke.globals import Globals
 from PIL import Image
-from PIL.Image import Image as ImageType
+
 
 class ESRGAN():
     def __init__(self, bg_tile_size=400) -> None:
@@ -16,7 +14,7 @@ class ESRGAN():
         else:
             use_half_precision = True
 
-    def load_esrgan_bg_upsampler(self, denoise_str):
+    def load_esrgan_bg_upsampler(self):
         if not torch.cuda.is_available():  # CPU or MPS on M1
             use_half_precision = False
         else:
@@ -26,16 +24,14 @@ class ESRGAN():
         from realesrgan import RealESRGANer
 
         model = SRVGGNetCompact(num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=32, upscale=4, act_type='prelu')
-        model_path = os.path.join(Globals.root, 'models/realesrgan/realesr-general-x4v3.pth')
-        wdn_model_path = os.path.join(Globals.root, 'models/realesrgan/realesr-general-wdn-x4v3.pth')
+        model_path = 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth'
         scale = 4
 
         bg_upsampler = RealESRGANer(
             scale=scale,
-            model_path=[model_path, wdn_model_path],
+            model_path=model_path,
             model=model,
             tile=self.bg_tile_size,
-            dni_weight=[denoise_str, 1 - denoise_str],
             tile_pad=10,
             pre_pad=0,
             half=use_half_precision,
@@ -43,13 +39,13 @@ class ESRGAN():
 
         return bg_upsampler
 
-    def process(self, image: ImageType, strength: float, seed: str = None, upsampler_scale: int = 2, denoise_str: float = 0.75):
+    def process(self, image, strength: float, seed: str = None, upsampler_scale: int = 2):
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore', category=DeprecationWarning)
             warnings.filterwarnings('ignore', category=UserWarning)
 
             try:
-                upsampler = self.load_esrgan_bg_upsampler(denoise_str)
+                upsampler = self.load_esrgan_bg_upsampler()
             except Exception:
                 import traceback
                 import sys
@@ -62,14 +58,12 @@ class ESRGAN():
 
         if seed is not None:
             print(
-                f'>> Real-ESRGAN Upscaling seed:{seed}, scale:{upsampler_scale}x, tile:{self.bg_tile_size}, denoise:{denoise_str}'
+                f'>> Real-ESRGAN Upscaling seed:{seed} : scale:{upsampler_scale}x'
             )
-        # ESRGAN outputs images with partial transparency if given RGBA images; convert to RGB
-        image = image.convert("RGB")
-
+            
         # REALSRGAN expects a BGR np array; make array and flip channels
         bgr_image_array = np.array(image, dtype=np.uint8)[...,::-1]
-
+        
         output, _ = upsampler.enhance(
             bgr_image_array,
             outscale=upsampler_scale,

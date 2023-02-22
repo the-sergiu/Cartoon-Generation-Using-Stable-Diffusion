@@ -1,42 +1,28 @@
 '''
 ldm.invoke.generator.inpaint descends from ldm.invoke.generator
 '''
-from __future__ import annotations
 
 import math
-
-import PIL
-import cv2
-import numpy as np
 import torch
-from PIL import Image, ImageFilter, ImageOps, ImageChops
-
-from ldm.invoke.generator.diffusers_pipeline import image_resized_to_grid_as_tensor, StableDiffusionGeneratorPipeline, \
-    ConditioningData
-from ldm.invoke.generator.img2img import Img2Img
-from ldm.invoke.patchmatch import PatchMatch
-from ldm.util import debug_image
-
-
-def infill_methods()->list[str]:
-    methods = [
-        "tile",
-        "solid",
-    ]
-    if PatchMatch.patchmatch_available():
-        methods.insert(0, 'patchmatch')
-    return methods
+import torchvision.transforms as T
+import numpy as  np
+import cv2 as cv
+import PIL
+from PIL import Image, ImageFilter, ImageOps
+from skimage.exposure.histogram_matching import match_histograms
+from einops import rearrange, repeat
+from ldm.invoke.devices             import choose_autocast
+from ldm.invoke.generator.img2img   import Img2Img
+from ldm.models.diffusion.ddim     import DDIMSampler
+from ldm.models.diffusion.ksampler import KSampler
+from ldm.invoke.generator.base import downsampling
 
 class Inpaint(Img2Img):
     def __init__(self, model, precision):
-        self.inpaint_height = 0
-        self.inpaint_width = 0
-        self.enable_image_debugging = False
         self.init_latent = None
         self.pil_image = None
         self.pil_mask = None
         self.mask_blur_radius = 0
-        self.infill_method = None
         super().__init__(model, precision)
 
     # Outpaint support code
@@ -55,19 +41,6 @@ class Inpaint(Img2Img):
             strides=(height * _strides[0], width * _strides[1], *_strides),
             writeable=False
         )
-
-    def infill_patchmatch(self, im: Image.Image) -> Image:
-        if im.mode != 'RGBA':
-            return im
-
-        # Skip patchmatch if patchmatch isn't available
-        if not PatchMatch.patchmatch_available():
-            return im
-
-        # Patchmatch (note, we may want to expose patch_size? Increasing it significantly impacts performance though)
-        im_patched_np = PatchMatch.inpaint(im.convert('RGB'), ImageOps.invert(im.split()[-1]), patch_size = 3)
-        im_patched = Image.fromarray(im_patched_np, mode = 'RGB')
-        return im_patched
 
     def tile_fill_missing(self, im: Image.Image, tile_size: int = 16, seed: int = None) -> Image:
         # Only fill if there's an alpha layer
@@ -120,13 +93,13 @@ class Inpaint(Img2Img):
         npgradient = np.uint8(255 * (1.0 - np.floor(np.abs(0.5 - np.float32(npimg) / 255.0) * 2.0)))
 
         # Detect hard edges
-        npedge = cv2.Canny(npimg, threshold1=100, threshold2=200)
+        npedge = cv.Canny(npimg, threshold1=100, threshold2=200)
 
         # Combine
         npmask = npgradient + npedge
 
-        # Expand
-        npmask = cv2.dilate(npmask, np.ones((3,3), np.uint8), iterations = int(edge_size / 2))
+        # Expand 
+        npmask = cv.dilate(npmask, np.ones((3,3), np.uint8), iterations = int(edge_size / 2))
 
         new_mask = Image.fromarray(npmask)
 
@@ -136,8 +109,14 @@ class Inpaint(Img2Img):
         return ImageOps.invert(new_mask)
 
 
-    def seam_paint(self, im: Image.Image, seam_size: int, seam_blur: int, prompt, sampler, steps, cfg_scale, ddim_eta,
-                   conditioning, strength, noise, infill_method, step_callback) -> Image.Image:
+    def seam_paint(self,
+        im: Image.Image,
+        seam_size: int,
+        seam_blur: int,
+        prompt,sampler,steps,cfg_scale,ddim_eta,
+        conditioning,strength,
+        noise
+    ) -> Image.Image:
         hard_mask = self.pil_image.split()[-1].copy()
         mask = self.mask_edge(hard_mask, seam_size, seam_blur)
 
@@ -149,29 +128,20 @@ class Inpaint(Img2Img):
             ddim_eta,
             conditioning,
             init_image = im.copy().convert('RGBA'),
-            mask_image = mask,
+            mask_image = mask.convert('RGB'), # Code currently requires an RGB mask
             strength = strength,
             mask_blur_radius = 0,
-            seam_size = 0,
-            step_callback = step_callback,
-            inpaint_width = im.width,
-            inpaint_height = im.height,
-            infill_method = infill_method
+            seam_size = 0
         )
 
-        seam_noise = self.get_noise(im.width, im.height)
-
-        result = make_image(seam_noise)
+        result = make_image(noise)
 
         return result
 
 
     @torch.no_grad()
     def get_make_image(self,prompt,sampler,steps,cfg_scale,ddim_eta,
-                       conditioning,
-                       init_image: PIL.Image.Image | torch.FloatTensor,
-                       mask_image: PIL.Image.Image | torch.FloatTensor,
-                       strength: float,
+                       conditioning,init_image,mask_image,strength,
                        mask_blur_radius: int = 8,
                        # Seam settings - when 0, doesn't fill seam
                        seam_size: int = 0,
@@ -180,12 +150,9 @@ class Inpaint(Img2Img):
                        seam_steps: int = 10,
                        tile_size: int = 32,
                        step_callback=None,
-                       inpaint_replace=False, enable_image_debugging=False,
-                       infill_method = None,
+                       inpaint_replace=False,
                        inpaint_width=None,
                        inpaint_height=None,
-                       inpaint_fill:tuple(int)=(0x7F, 0x7F, 0x7F, 0xFF),
-                       attention_maps_callback=None,
                        **kwargs):
         """
         Returns a function returning an image derived from the prompt and
@@ -193,123 +160,168 @@ class Inpaint(Img2Img):
         the time you call it.  kwargs are 'init_latent' and 'strength'
         """
 
-        self.enable_image_debugging = enable_image_debugging
-        infill_method = infill_method or infill_methods()[0]
-        self.infill_method = infill_method
-
         self.inpaint_width = inpaint_width
         self.inpaint_height = inpaint_height
 
         if isinstance(init_image, PIL.Image.Image):
-            self.pil_image = init_image.copy()
+            self.pil_image = init_image
 
-            # Do infill
-            if infill_method == 'patchmatch' and PatchMatch.patchmatch_available():
-                init_filled = self.infill_patchmatch(self.pil_image.copy())
-            elif infill_method == 'tile':
-                init_filled = self.tile_fill_missing(
-                    self.pil_image.copy(),
-                    seed = self.seed,
-                    tile_size = tile_size
-                )
-            elif infill_method == 'solid':
-                solid_bg = PIL.Image.new("RGBA", init_image.size, inpaint_fill)
-                init_filled = PIL.Image.alpha_composite(solid_bg, init_image)
-            else:
-                raise ValueError(f"Non-supported infill type {infill_method}", infill_method)
+            # Fill missing areas of original image
+            init_filled = self.tile_fill_missing(
+                self.pil_image.copy(),
+                seed = self.seed if (self.seed is not None
+                                     and self.seed >= 0) else self.new_seed(),
+                tile_size = tile_size
+            )
             init_filled.paste(init_image, (0,0), init_image.split()[-1])
 
             # Resize if requested for inpainting
             if inpaint_width and inpaint_height:
                 init_filled = init_filled.resize((inpaint_width, inpaint_height))
 
-            debug_image(init_filled, "init_filled", debug_status=self.enable_image_debugging)
-
             # Create init tensor
-            init_image = image_resized_to_grid_as_tensor(init_filled.convert('RGB'))
+            init_image = self._image_to_tensor(init_filled.convert('RGB'))
 
         if isinstance(mask_image, PIL.Image.Image):
-            self.pil_mask = mask_image.copy()
-            debug_image(mask_image, "mask_image BEFORE multiply with pil_image", debug_status=self.enable_image_debugging)
-
-            init_alpha = self.pil_image.getchannel("A")
-            if mask_image.mode != "L":
-                # FIXME: why do we get passed an RGB image here? We can only use single-channel.
-                mask_image = mask_image.convert("L")
-            mask_image = ImageChops.multiply(mask_image, init_alpha)
             self.pil_mask = mask_image
 
             # Resize if requested for inpainting
             if inpaint_width and inpaint_height:
                 mask_image = mask_image.resize((inpaint_width, inpaint_height))
 
-            debug_image(mask_image, "mask_image AFTER multiply with pil_image", debug_status=self.enable_image_debugging)
-            mask: torch.FloatTensor = image_resized_to_grid_as_tensor(mask_image, normalize=False)
-        else:
-            mask: torch.FloatTensor = mask_image
+            mask_image = mask_image.resize(
+                (
+                    mask_image.width // downsampling,
+                    mask_image.height // downsampling
+                ),
+                resample=Image.Resampling.NEAREST
+            )
+            mask_image = self._image_to_tensor(mask_image,normalize=False)
 
         self.mask_blur_radius = mask_blur_radius
 
-        # noinspection PyTypeChecker
-        pipeline: StableDiffusionGeneratorPipeline = self.model
-        pipeline.scheduler = sampler
+        # klms samplers not supported yet, so ignore previous sampler
+        if isinstance(sampler,KSampler):
+            print(
+                f">> Using recommended DDIM sampler for inpainting."
+            )
+            sampler = DDIMSampler(self.model, device=self.model.device)
+        
+        sampler.make_schedule(
+            ddim_num_steps=steps, ddim_eta=ddim_eta, verbose=False
+        )
 
+        mask_image = mask_image[0][0].unsqueeze(0).repeat(4,1,1).unsqueeze(0)
+        mask_image = repeat(mask_image, '1 ... -> b ...', b=1)
+
+        scope = choose_autocast(self.precision)
+        with scope(self.model.device.type):
+            self.init_latent = self.model.get_first_stage_encoding(
+                self.model.encode_first_stage(init_image)
+            ) # move to latent space
+
+        t_enc   = int(strength * steps)
         # todo: support cross-attention control
         uc, c, _ = conditioning
-        conditioning_data = (ConditioningData(uc, c, cfg_scale)
-                             .add_scheduler_args_if_applicable(pipeline.scheduler, eta=ddim_eta))
 
+        print(f">> target t_enc is {t_enc} steps")
 
+        @torch.no_grad()
         def make_image(x_T):
-            pipeline_output = pipeline.inpaint_from_embeddings(
-                init_image=init_image,
-                mask=1 - mask,  # expects white means "paint here."
-                strength=strength,
-                num_inference_steps=steps,
-                conditioning_data=conditioning_data,
-                noise_func=self.get_noise_like,
-                callback=step_callback,
+            # encode (scaled latent)
+            z_enc = sampler.stochastic_encode(
+                self.init_latent,
+                torch.tensor([t_enc]).to(self.model.device),
+                noise=x_T
             )
 
-            if pipeline_output.attention_map_saver is not None and attention_maps_callback is not None:
-                attention_maps_callback(pipeline_output.attention_map_saver)
+            # to replace masked area with latent noise, weighted by inpaint_replace strength
+            if inpaint_replace > 0.0:
+                print(f'>> inpaint will replace what was under the mask with a strength of {inpaint_replace}')
+                l_noise = self.get_noise(kwargs['width'],kwargs['height'])
+                inverted_mask = 1.0-mask_image  # there will be 1s where the mask is
+                masked_region = (1.0-inpaint_replace) * inverted_mask * z_enc + inpaint_replace * inverted_mask * l_noise
+                z_enc   = z_enc * mask_image + masked_region
 
-            result = self.postprocess_size_and_mask(pipeline.numpy_to_pil(pipeline_output.images)[0])
+            # decode it
+            samples = sampler.decode(
+                z_enc,
+                c,
+                t_enc,
+                img_callback                 = step_callback,
+                unconditional_guidance_scale = cfg_scale,
+                unconditional_conditioning = uc,
+                mask                       = mask_image,
+                init_latent                = self.init_latent
+            )
+
+            result = self.sample_to_image(samples)
 
             # Seam paint if this is our first pass (seam_size set to 0 during seam painting)
             if seam_size > 0:
-                old_image = self.pil_image or init_image
-                old_mask = self.pil_mask or mask_image
-
-                result = self.seam_paint(result, seam_size, seam_blur, prompt, sampler, seam_steps, cfg_scale, ddim_eta,
-                                         conditioning, seam_strength, x_T, infill_method, step_callback)
-
-                # Restore original settings
-                self.get_make_image(prompt,sampler,steps,cfg_scale,ddim_eta,
-                       conditioning,
-                       old_image,
-                       old_mask,
-                       strength,
-                       mask_blur_radius, seam_size, seam_blur, seam_strength,
-                       seam_steps, tile_size, step_callback,
-                       inpaint_replace, enable_image_debugging,
-                       inpaint_width = inpaint_width,
-                       inpaint_height = inpaint_height,
-                       infill_method = infill_method,
-                       **kwargs)
+                result = self.seam_paint(
+                    result,
+                    seam_size,
+                    seam_blur,
+                    prompt,
+                    sampler,
+                    seam_steps,
+                    cfg_scale,
+                    ddim_eta,
+                    conditioning,
+                    seam_strength,
+                    x_T)
 
             return result
 
         return make_image
 
 
+    def color_correct(self, image: Image.Image, base_image: Image.Image, mask: Image.Image, mask_blur_radius: int) -> Image.Image:
+        # Get the original alpha channel of the mask if there is one.
+        # Otherwise it is some other black/white image format ('1', 'L' or 'RGB')
+        pil_init_mask = mask.getchannel('A') if mask.mode == 'RGBA' else mask.convert('L')
+        pil_init_image = base_image.convert('RGBA') # Add an alpha channel if one doesn't exist
+
+        # Build an image with only visible pixels from source to use as reference for color-matching.
+        init_rgb_pixels = np.asarray(base_image.convert('RGB'), dtype=np.uint8)
+        init_a_pixels = np.asarray(pil_init_image.getchannel('A'), dtype=np.uint8)
+        init_mask_pixels = np.asarray(pil_init_mask, dtype=np.uint8)
+
+        # Get numpy version of result
+        np_image = np.asarray(image, dtype=np.uint8)
+
+        # Mask and calculate mean and standard deviation
+        mask_pixels = init_a_pixels * init_mask_pixels > 0
+        np_init_rgb_pixels_masked = init_rgb_pixels[mask_pixels, :]
+        np_image_masked = np_image[mask_pixels, :]
+
+        init_means = np_init_rgb_pixels_masked.mean(axis=0)
+        init_std = np_init_rgb_pixels_masked.std(axis=0)
+        gen_means = np_image_masked.mean(axis=0)
+        gen_std = np_image_masked.std(axis=0)
+
+        # Color correct
+        np_matched_result = np_image.copy()
+        np_matched_result[:,:,:] = (((np_matched_result[:,:,:].astype(np.float32) - gen_means[None,None,:]) / gen_std[None,None,:]) * init_std[None,None,:] + init_means[None,None,:]).clip(0, 255).astype(np.uint8)
+        matched_result = Image.fromarray(np_matched_result, mode='RGB')
+
+        # Blur the mask out (into init image) by specified amount
+        if mask_blur_radius > 0:
+            nm = np.asarray(pil_init_mask, dtype=np.uint8)
+            nmd = cv.erode(nm, kernel=np.ones((3,3), dtype=np.uint8), iterations=int(mask_blur_radius / 2))
+            pmd = Image.fromarray(nmd, mode='L')
+            blurred_init_mask = pmd.filter(ImageFilter.BoxBlur(mask_blur_radius))
+        else:
+            blurred_init_mask = pil_init_mask
+
+        # Paste original on color-corrected generation (using blurred mask)
+        matched_result.paste(base_image, (0,0), mask = blurred_init_mask)
+        return matched_result
+
+
     def sample_to_image(self, samples)->Image.Image:
         gen_result = super().sample_to_image(samples).convert('RGB')
-        return self.postprocess_size_and_mask(gen_result)
-
-
-    def postprocess_size_and_mask(self, gen_result: Image.Image) -> Image.Image:
-        debug_image(gen_result, "gen_result", debug_status=self.enable_image_debugging)
 
         # Resize if necessary
         if self.inpaint_width and self.inpaint_height:
@@ -317,8 +329,7 @@ class Inpaint(Img2Img):
 
         if self.pil_image is None or self.pil_mask is None:
             return gen_result
-
-        corrected_result = self.repaste_and_color_correct(gen_result, self.pil_image, self.pil_mask, self.mask_blur_radius)
-        debug_image(corrected_result, "corrected_result", debug_status=self.enable_image_debugging)
+        
+        corrected_result = self.color_correct(gen_result, self.pil_image, self.pil_mask, self.mask_blur_radius)
 
         return corrected_result

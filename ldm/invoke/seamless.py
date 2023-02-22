@@ -1,5 +1,5 @@
 import torch.nn as nn
-
+        
 def _conv_forward_asymmetric(self, input, weight, bias):
     """
     Patch for Conv2d._conv_forward that supports asymmetric padding
@@ -12,7 +12,6 @@ def configure_model_padding(model, seamless, seamless_axes):
     """
     Modifies the 2D convolution layers to use a circular padding mode based on the `seamless` and `seamless_axes` options.
     """
-    # TODO: get an explicit interface for this in diffusers: https://github.com/huggingface/diffusers/issues/556
     for m in model.modules():
         if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
             if seamless:

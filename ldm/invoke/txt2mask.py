@@ -2,13 +2,13 @@
 assignment of masks via text prompt using clipseg.
 
 Here is typical usage:
-
+    
     from ldm.invoke.txt2mask import Txt2Mask, SegmentedGrayscale
     from PIL import Image
 
     txt2mask = Txt2Mask(self.device)
     segmented = txt2mask.segment(Image.open('/path/to/img.png'),'a bagel')
-
+    
     # this will return a grayscale Image of the segmented data
     grayscale = segmented.to_grayscale()
 
@@ -29,19 +29,21 @@ work fine.
 
 import torch
 import numpy as  np
-from transformers import AutoProcessor, CLIPSegForImageSegmentation
+from clipseg.clipseg import CLIPDensePredT
+from einops import rearrange, repeat
 from PIL import Image, ImageOps
 from torchvision import transforms
-from ldm.invoke.globals import global_cache_dir
 
-CLIPSEG_MODEL = 'CIDAS/clipseg-rd64-refined'
+CLIP_VERSION = 'ViT-B/16'
+CLIPSEG_WEIGHTS = 'models/clipseg/clipseg_weights/rd64-uni.pth'
+CLIPSEG_WEIGHTS_REFINED = 'models/clipseg/clipseg_weights/rd64-uni-refined.pth'
 CLIPSEG_SIZE = 352
 
 class SegmentedGrayscale(object):
     def __init__(self, image:Image, heatmap:torch.Tensor):
         self.heatmap = heatmap
         self.image = image
-
+        
     def to_grayscale(self,invert:bool=False)->Image:
         return self._rescale(Image.fromarray(np.uint8(255 - self.heatmap * 255 if invert else self.heatmap * 255)))
 
@@ -73,15 +75,12 @@ class Txt2Mask(object):
     '''
     def __init__(self,device='cpu',refined=False):
         print('>> Initializing clipseg model for text to mask inference')
-
-        # BUG: we are not doing anything with the device option at this time
         self.device = device
-        self.processor = AutoProcessor.from_pretrained(CLIPSEG_MODEL,
-                                                       cache_dir=global_cache_dir('hub')
-                                                       )
-        self.model = CLIPSegForImageSegmentation.from_pretrained(CLIPSEG_MODEL,
-                                                                 cache_dir=global_cache_dir('hub')
-                                                                 )
+        self.model = CLIPDensePredT(version=CLIP_VERSION, reduce_dim=64, complex_trans_conv=refined)
+        self.model.eval()
+        # initially we keep everything in cpu to conserve space
+        self.model.to('cpu')
+        self.model.load_state_dict(torch.load(CLIPSEG_WEIGHTS_REFINED if refined else CLIPSEG_WEIGHTS, map_location=torch.device('cpu')), strict=False)
 
     @torch.no_grad()
     def segment(self, image, prompt:str) -> SegmentedGrayscale:
@@ -90,6 +89,9 @@ class Txt2Mask(object):
         provided image and returns a SegmentedGrayscale object in which the brighter
         pixels indicate where the object is inferred to be.
         '''
+        self._to_device(self.device)
+        prompts = [prompt]   # right now we operate on just a single prompt at a time
+
         transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
@@ -101,14 +103,15 @@ class Txt2Mask(object):
 
         image = ImageOps.exif_transpose(image)
         img = self._scale_and_crop(image)
+        img = transform(img).unsqueeze(0)
 
-        inputs = self.processor(text=[prompt],
-                                images=[img],
-                                padding=True,
-                                return_tensors='pt')
-        outputs = self.model(**inputs)
-        heatmap = torch.sigmoid(outputs.logits)
+        preds = self.model(img.repeat(len(prompts),1,1,1), prompts)[0]
+        heatmap = torch.sigmoid(preds[0][0]).cpu()
+        self._to_device('cpu')
         return SegmentedGrayscale(image, heatmap)
+
+    def _to_device(self, device):
+        self.model.to(device)
 
     def _scale_and_crop(self, image:Image)->Image:
         scaled_image = Image.new('RGB',(CLIPSEG_SIZE,CLIPSEG_SIZE))

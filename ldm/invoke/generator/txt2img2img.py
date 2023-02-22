@@ -2,162 +2,176 @@
 ldm.invoke.generator.txt2img inherits from ldm.invoke.generator
 '''
 
-import math
-from typing import Callable, Optional
-
 import torch
-from diffusers.utils.logging import get_verbosity, set_verbosity, set_verbosity_error
-
+import numpy as  np
+import math
 from ldm.invoke.generator.base import Generator
-from ldm.invoke.generator.diffusers_pipeline import trim_to_multiple_of, StableDiffusionGeneratorPipeline, \
-    ConditioningData
-from ldm.models.diffusion.shared_invokeai_diffusion import PostprocessingSettings
-
+from ldm.models.diffusion.ddim import DDIMSampler
+from ldm.invoke.generator.omnibus import Omnibus
+from ldm.models.diffusion.shared_invokeai_diffusion import InvokeAIDiffuserComponent
+from PIL import Image
 
 class Txt2Img2Img(Generator):
     def __init__(self, model, precision):
         super().__init__(model, precision)
         self.init_latent = None    # for get_noise()
 
-    def get_make_image(self, prompt:str, sampler, steps:int, cfg_scale:float, ddim_eta,
-                       conditioning, width:int, height:int, strength:float,
-                       step_callback:Optional[Callable]=None, threshold=0.0, warmup=0.2, perlin=0.0,
-                       h_symmetry_time_pct=None, v_symmetry_time_pct=None, attention_maps_callback=None, **kwargs):
+    @torch.no_grad()
+    def get_make_image(self,prompt,sampler,steps,cfg_scale,ddim_eta,
+                       conditioning,width,height,strength,step_callback=None,**kwargs):
         """
         Returns a function returning an image derived from the prompt and the initial image
         Return value depends on the seed at the time you call it
         kwargs are 'width' and 'height'
         """
-        self.perlin = perlin
-
-        # noinspection PyTypeChecker
-        pipeline: StableDiffusionGeneratorPipeline = self.model
-        pipeline.scheduler = sampler
-
         uc, c, extra_conditioning_info = conditioning
-        conditioning_data = (
-            ConditioningData(
-                uc, c, cfg_scale, extra_conditioning_info,
-                postprocessing_settings = PostprocessingSettings(
-                    threshold=threshold,
-                    warmup=0.2,
-                    h_symmetry_time_pct=h_symmetry_time_pct,
-                    v_symmetry_time_pct=v_symmetry_time_pct
-                )
-            ).add_scheduler_args_if_applicable(pipeline.scheduler, eta=ddim_eta))
+        scale_dim = min(width, height)
+        scale = 512 / scale_dim
 
+        init_width = math.ceil(scale * width / 64) * 64
+        init_height = math.ceil(scale * height / 64) * 64
+
+        @torch.no_grad()
         def make_image(x_T):
 
-            first_pass_latent_output, _ = pipeline.latents_from_embeddings(
-                latents=torch.zeros_like(x_T),
-                num_inference_steps=steps,
-                conditioning_data=conditioning_data,
-                noise=x_T,
-                callback=step_callback,
+            shape = [
+                self.latent_channels,
+                init_height // self.downsampling_factor,
+                init_width // self.downsampling_factor,
+            ]
+
+            sampler.make_schedule(
+                    ddim_num_steps=steps, ddim_eta=ddim_eta, verbose=False
             )
 
-            # Get our initial generation width and height directly from the latent output so
-            # the message below is accurate.
-            init_width = first_pass_latent_output.size()[3] * self.downsampling_factor
-            init_height = first_pass_latent_output.size()[2] * self.downsampling_factor
+            #x = self.get_noise(init_width, init_height)
+            x = x_T
+
+            if self.free_gpu_mem and self.model.model.device != self.model.device:
+                self.model.model.to(self.model.device)
+
+            samples, _ = sampler.sample(
+                batch_size                   = 1,
+                S                            = steps,
+                x_T                          = x,
+                conditioning                 = c,
+                shape                        = shape,
+                verbose                      = False,
+                unconditional_guidance_scale = cfg_scale,
+                unconditional_conditioning   = uc,
+                eta                          = ddim_eta,
+                img_callback                 = step_callback,
+                extra_conditioning_info      = extra_conditioning_info
+            )
+
             print(
                   f"\n>> Interpolating from {init_width}x{init_height} to {width}x{height} using DDIM sampling"
                  )
 
             # resizing
-            resized_latents = torch.nn.functional.interpolate(
-                first_pass_latent_output,
+            samples = torch.nn.functional.interpolate(
+                samples,
                 size=(height // self.downsampling_factor, width // self.downsampling_factor),
                 mode="bilinear"
             )
 
-            # Free up memory from the last generation.
-            clear_cuda_cache = kwargs['clear_cuda_cache'] or None
-            if clear_cuda_cache is not None:
-                clear_cuda_cache()
+            t_enc = int(strength * steps)
+            ddim_sampler = DDIMSampler(self.model, device=self.model.device)
+            ddim_sampler.make_schedule(
+                    ddim_num_steps=steps, ddim_eta=ddim_eta, verbose=False
+            )
 
-            second_pass_noise = self.get_noise_like(resized_latents, override_perlin=True)
+            z_enc = ddim_sampler.stochastic_encode(
+                samples,
+                torch.tensor([t_enc]).to(self.model.device),
+                noise=self.get_noise(width,height,False)
+            )
 
-            # Clear symmetry for the second pass
-            from dataclasses import replace
-            new_postprocessing_settings = replace(conditioning_data.postprocessing_settings, h_symmetry_time_pct=None)
-            new_postprocessing_settings = replace(new_postprocessing_settings, v_symmetry_time_pct=None)
-            new_conditioning_data = replace(conditioning_data, postprocessing_settings=new_postprocessing_settings)
+            # decode it
+            samples = ddim_sampler.decode(
+                z_enc,
+                c,
+                t_enc,
+                img_callback = step_callback,
+                unconditional_guidance_scale=cfg_scale,
+                unconditional_conditioning=uc,
+                extra_conditioning_info=extra_conditioning_info,
+                all_timesteps_count=steps
+            )
 
-            verbosity = get_verbosity()
-            set_verbosity_error()
-            pipeline_output = pipeline.img2img_from_latents_and_embeddings(
-                resized_latents,
-                num_inference_steps=steps,
-                conditioning_data=new_conditioning_data,
-                strength=strength,
-                noise=second_pass_noise,
-                callback=step_callback)
-            set_verbosity(verbosity)
+            if self.free_gpu_mem:
+                self.model.model.to("cpu")
 
-            if pipeline_output.attention_map_saver is not None and attention_maps_callback is not None:
-                attention_maps_callback(pipeline_output.attention_map_saver)
-
-            return pipeline.numpy_to_pil(pipeline_output.images)[0]
-
-
-        # FIXME: do we really need something entirely different for the inpainting model?
+            return self.sample_to_image(samples)
 
         # in the case of the inpainting model being loaded, the trick of
         # providing an interpolated latent doesn't work, so we transiently
         # create a 512x512 PIL image, upscale it, and run the inpainting
         # over it in img2img mode. Because the inpaing model is so conservative
         # it doesn't change the image (much)
-
-        return make_image
-
-    def get_noise_like(self, like: torch.Tensor, override_perlin: bool=False):
-        device = like.device
-        if device.type == 'mps':
-            x = torch.randn_like(like, device='cpu', dtype=self.torch_dtype()).to(device)
+        def inpaint_make_image(x_T):
+            omnibus = Omnibus(self.model,self.precision)
+            result = omnibus.generate(
+                prompt,
+                sampler=sampler,
+                width=init_width,
+                height=init_height,
+                step_callback=step_callback,
+                steps = steps,
+                cfg_scale = cfg_scale,
+                ddim_eta = ddim_eta,
+                conditioning = conditioning,
+                **kwargs
+            )
+            assert result is not None and len(result)>0,'** txt2img failed **'
+            image = result[0][0]
+            interpolated_image = image.resize((width,height),resample=Image.Resampling.LANCZOS)
+            print(kwargs.pop('init_image',None))
+            result = omnibus.generate(
+                prompt,
+                sampler=sampler,
+                init_image=interpolated_image,
+                width=width,
+                height=height,
+                seed=result[0][1],
+                step_callback=step_callback,
+                steps = steps,
+                cfg_scale = cfg_scale,
+                ddim_eta = ddim_eta,
+                conditioning = conditioning,
+                **kwargs
+                )
+            return result[0][0]
+            
+        if sampler.uses_inpainting_model():
+            return inpaint_make_image
         else:
-            x = torch.randn_like(like, device=device, dtype=self.torch_dtype())
-        if self.perlin > 0.0 and override_perlin == False:
-            shape = like.shape
-            x = (1-self.perlin)*x + self.perlin*self.get_perlin_noise(shape[3], shape[2])
-        return x
+            return make_image
 
     # returns a tensor filled with random numbers from a normal distribution
     def get_noise(self,width,height,scale = True):
         # print(f"Get noise: {width}x{height}")
         if scale:
-            # Scale the input width and height for the initial generation
-            # Make their area equivalent to the model's resolution area (e.g. 512*512 = 262144),
-            # while keeping the minimum dimension at least 0.5 * resolution (e.g. 512*0.5 = 256)
-
-            aspect = width / height
-            dimension = self.model.unet.config.sample_size * self.model.vae_scale_factor
-            min_dimension = math.floor(dimension * 0.5)
-            model_area = dimension * dimension # hardcoded for now since all models are trained on square images
-
-            if aspect > 1.0:
-                init_height = max(min_dimension, math.sqrt(model_area / aspect))
-                init_width = init_height * aspect
-            else:
-                init_width = max(min_dimension, math.sqrt(model_area * aspect))
-                init_height = init_width / aspect
-
-            scaled_width, scaled_height = trim_to_multiple_of(math.floor(init_width), math.floor(init_height))
-
+            trained_square = 512 * 512
+            actual_square = width * height
+            scale = math.sqrt(trained_square / actual_square)
+            scaled_width = math.ceil(scale * width / 64) * 64
+            scaled_height = math.ceil(scale * height / 64) * 64
         else:
             scaled_width = width
             scaled_height = height
 
-        device = self.model.device
-        channels = self.latent_channels
-        if channels == 9:
-            channels = 4  # we don't really want noise for all the mask channels
-        shape = (1, channels,
-                 scaled_height // self.downsampling_factor, scaled_width // self.downsampling_factor)
+        device      = self.model.device
         if self.use_mps_noise or device.type == 'mps':
-            tensor = torch.empty(size=shape, device='cpu')
-            tensor = self.get_noise_like(like=tensor).to(device)
+            return torch.randn([1,
+                                self.latent_channels,
+                                scaled_height // self.downsampling_factor,
+                                scaled_width  // self.downsampling_factor],
+                                device='cpu').to(device)
         else:
-            tensor = torch.empty(size=shape, device=device)
-            tensor = self.get_noise_like(like=tensor)
-        return tensor
+            return torch.randn([1,
+                                self.latent_channels,
+                                scaled_height // self.downsampling_factor,
+                                scaled_width  // self.downsampling_factor],
+                                device=device)
+

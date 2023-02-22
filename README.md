@@ -1,66 +1,21 @@
 <div align="center">
 
-![project logo](https://github.com/invoke-ai/InvokeAI/raw/main/docs/assets/invoke_ai_banner.png)
+## Stable Diffusion Art Generation using the InvokeAI Codebase
 
-# InvokeAI: A Stable Diffusion Toolkit
+## TODO: Insert images of generated art
 
-[![discord badge]][discord link]
-
-[![latest release badge]][latest release link] [![github stars badge]][github stars link] [![github forks badge]][github forks link]
-
-[![CI checks on main badge]][CI checks on main link] [![latest commit to main badge]][latest commit to main link]
-
-[![github open issues badge]][github open issues link] [![github open prs badge]][github open prs link] [![translation status badge]][translation status link]
-
-[CI checks on main badge]: https://flat.badgen.net/github/checks/invoke-ai/InvokeAI/main?label=CI%20status%20on%20main&cache=900&icon=github
-[CI checks on main link]:https://github.com/invoke-ai/InvokeAI/actions?query=branch%3Amain
-[discord badge]: https://flat.badgen.net/discord/members/ZmtBAhwWhy?icon=discord
-[discord link]: https://discord.gg/ZmtBAhwWhy
-[github forks badge]: https://flat.badgen.net/github/forks/invoke-ai/InvokeAI?icon=github
-[github forks link]: https://useful-forks.github.io/?repo=invoke-ai%2FInvokeAI
-[github open issues badge]: https://flat.badgen.net/github/open-issues/invoke-ai/InvokeAI?icon=github
-[github open issues link]: https://github.com/invoke-ai/InvokeAI/issues?q=is%3Aissue+is%3Aopen
-[github open prs badge]: https://flat.badgen.net/github/open-prs/invoke-ai/InvokeAI?icon=github
-[github open prs link]: https://github.com/invoke-ai/InvokeAI/pulls?q=is%3Apr+is%3Aopen
-[github stars badge]: https://flat.badgen.net/github/stars/invoke-ai/InvokeAI?icon=github
-[github stars link]: https://github.com/invoke-ai/InvokeAI/stargazers
-[latest commit to main badge]: https://flat.badgen.net/github/last-commit/invoke-ai/InvokeAI/main?icon=github&color=yellow&label=last%20dev%20commit&cache=900
-[latest commit to main link]: https://github.com/invoke-ai/InvokeAI/commits/main
-[latest release badge]: https://flat.badgen.net/github/release/invoke-ai/InvokeAI/development?icon=github
-[latest release link]: https://github.com/invoke-ai/InvokeAI/releases
-[translation status badge]: https://hosted.weblate.org/widgets/invokeai/-/svg-badge.svg
-[translation status link]: https://hosted.weblate.org/engage/invokeai/
-
-</div>
-
-InvokeAI is a leading creative engine built to empower professionals and enthusiasts alike. Generate and create stunning visual media using the latest AI-driven technologies. InvokeAI offers an industry leading Web Interface, interactive Command Line Interface, and also serves as the foundation for multiple commercial products.
-
-**Quick links**: [[How to Install](https://invoke-ai.github.io/InvokeAI/#installation)] [<a href="https://discord.gg/ZmtBAhwWhy">Discord Server</a>] [<a href="https://invoke-ai.github.io/InvokeAI/">Documentation and Tutorials</a>] [<a href="https://github.com/invoke-ai/InvokeAI/">Code and Downloads</a>] [<a href="https://github.com/invoke-ai/InvokeAI/issues">Bug Reports</a>] [<a href="https://github.com/invoke-ai/InvokeAI/discussions">Discussion, Ideas & Q&A</a>]
-
-_Note: InvokeAI is rapidly evolving. Please use the
-[Issues](https://github.com/invoke-ai/InvokeAI/issues) tab to report bugs and make feature
-requests. Be sure to use the provided templates. They will help us diagnose issues faster._
-
-<div align="center">
-
-![canvas preview](https://github.com/invoke-ai/InvokeAI/raw/main/docs/assets/canvas_preview.png)
 
 </div>
 
 ## Table of Contents
 
-1. [Quick Start](#getting-started-with-invokeai)
-2. [Installation](#detailed-installation-instructions)
-3. [Hardware Requirements](#hardware-requirements)
-4. [Features](#features)
-5. [Latest Changes](#latest-changes)
-6. [Troubleshooting](#troubleshooting)
-7. [Contributing](#contributing)
-8. [Contributors](#contributors)
-9. [Support](#support)
-10. [Further Reading](#further-reading)
+1. **Quick Start**
+2. **Installation**
+3. **Hardware Requirements**
+4. **Fine-tuning for Art Generation**
+5. **Art Generation Results**
 
-## Getting Started with InvokeAI
+## 1. Getting Started with InvokeAI
 
 For full installation and upgrade instructions, please see:
 [InvokeAI Installation Overview](https://invoke-ai.github.io/InvokeAI/installation/)
@@ -101,7 +56,7 @@ and go to http://localhost:9090.
 
 10. Type `banana sushi` in the box on the top left and click `Invoke`
 
-### Command-Line Installation (for users familiar with Terminals)
+## 2. Command-Line Installation (for users familiar with Terminals)
 
 You must have Python 3.9 or 3.10 installed on your machine. Earlier or later versions are
 not supported.
@@ -180,13 +135,11 @@ AMD card (using the ROCm driver). For full installation and upgrade
 instructions, please see:
 [InvokeAI Installation Overview](https://invoke-ai.github.io/InvokeAI/installation/INSTALL_SOURCE/)
 
-## Hardware Requirements
+## 3. Hardware Requirements
 
 InvokeAI is supported across Linux, Windows and macOS. Linux
 users can use either an Nvidia-based card (with CUDA support) or an
 AMD card (using the ROCm driver).
-
-### System
 
 You will need one of the following:
 
@@ -198,90 +151,82 @@ We do not recommend the GTX 1650 or 1660 series video cards. They are
 unable to run in half-precision mode and do not have sufficient VRAM
 to render 512x512 images.
 
-### Memory
 
-- At least 12 GB Main Memory RAM.
+## 4. Fine-tuning for Art Generation
 
-### Disk
+### 1. Allowing for download of models
 
-- At least 12 GB of free disk space for the machine learning model, Python, and all its dependencies.
+In order to allow for download of models (which is absolutely necessary as they do are not included in the codebase) you must make a few changes. Go to `ldm/modules/encoders/modules/py` and set the `local_files_only` flag to `False` in `BERTTokenizer` and `FrozenCLIPEmbedder`.
 
-## Features
+The fine-tuning process cannot start without these models being present.
 
-Feature documentation can be reviewed by navigating to [the InvokeAI Documentation page](https://invoke-ai.github.io/InvokeAI/features/)
+### 2. Importing Stable-Diffusion and other models checkpoints
 
-### *Web Server & UI*
+The above step downloaded models automatically. For some other models, we are forced to copy them manually in the codebase.
 
-InvokeAI offers a locally hosted Web Server & React Frontend, with an industry leading user experience. The Web-based UI allows for simple and intuitive workflows, and is responsive for use on mobile devices and tablets accessing the web server.
+- We have to create a `models` directory in the root folder of the repo.
+- Inside it we will have 2 directories: `gfpgan` and `ldm`.
+- Inside the `ldm` we create a folder named `stable-diffusion-v1`.
 
-### *Unified Canvas*
+As the name suggest, we will have to place the mdoel checkpoints in their respective folders. 
 
-The Unified Canvas is a fully integrated canvas implementation with support for all core generation capabilities, in/outpainting, brush tools, and more. This creative tool unlocks the capability for artists to create with AI as a creative collaborator, and can be used to augment AI-generated imagery, sketches, photography, renders, and more.
+| Model Name   |      Location      |  Link |
+|----------|:-------------:|------:|
+| Codeformer |  ldm/invoke/restoration/codeformer/weights/codeformer.pth | [link](https://huggingface.co/spaces/sczhou/CodeFormer)
+| GFPGAN |    models\gfpgan\GFPGANv1.4.pth   |   [link](https://huggingface.co/TencentARC/GFPGANv1) |
+| Stable Diffusion v1.5| models\ldm\stable-diffusion-v1\model.ckpt |    [link](https://huggingface.co/runwayml/stable-diffusion-v1-5) |
 
-### *Advanced Prompt Syntax*
+*the Stable Diffusion model chosen should be the one optimised for fine-tuning, not inference.
 
-InvokeAI's advanced prompt syntax allows for token weighting, cross-attention control, and prompt blending, allowing for fine-tuned tweaking of your invocations and exploration of the latent space.
+### 3. Training Data
 
-### *Command Line Interface*
+I also created a directory named `training_data` in the root folder of the repo. This is where we will store the raw and processed training data. 
 
-For users utilizing a terminal-based environment, or who want to take advantage of CLI features, InvokeAI offers an extensive and actively supported command-line interface that provides the full suite of generation functionality available in the tool.
+Raw images are the ones procured from the internet. I leveraged the `Preprocess_Images.ipynb` to bring my images to the 512*512 resolution. 
 
-### Other features
+Processed images, in the case of my art generation, are stored in different sub-directories based on style.
 
-- *Support for both ckpt and diffusers models*
-- *SD 2.0, 2.1 support*
-- *Noise Control & Tresholding*
-- *Popular Sampler Support*
-- *Upscaling & Face Restoration Tools*
-- *Embedding Manager & Support*
-- *Model Manager & Support*
+### 4. Config Files
 
-### Coming Soon
+Config files can be found in the `config` directory. There are 2 main config files we are mainly interested in:
 
-- *Node-Based Architecture & UI*
-- And more...
+- `stable-diffusion/v1-finetune_style.yaml`
+- `models.yaml`
 
-### Latest Changes
+The `models` config can be left as is, it's used for "knowing" where to find the varios models.
 
-For our latest changes, view our [Release
-Notes](https://github.com/invoke-ai/InvokeAI/releases) and the
-[CHANGELOG](docs/CHANGELOG.md).
+The `v1-finetune_style.yaml` config will dictate how the entire fine-tuning process will proceed. This amazing [Medium Article](https://towardsdatascience.com/how-to-fine-tune-stable-diffusion-using-textual-inversion-b995d7ecc095)  goes over the importance of various parameters found within the config file.
 
-## Troubleshooting
+### 5. Starting the Fine-Tuning Process (cmd)
+Before running the below command, make sure you have activated your invokeai environment.
 
-Please check out our **[Q&A](https://invoke-ai.github.io/InvokeAI/help/TROUBLESHOOT/#faq)** to get solutions for common installation
-problems and other issues.
+The command below is a working example I used in order to generate a style embedding using South Park. The generated embedding would later be used for inference (and implicitly new Art Generation).
+```
+python main.py --base configs\stable-diffusion\v1-finetune_style.yaml \
+                -t \
+                --actual_resume models\ldm\stable-diffusion-v1\model.ckpt \
+                -n my_key \
+                --gpus 0, \
+                --data_root .\training_data\processed\style_south_park
 
-## Contributing
+```
+The `my_key` parameter should probably be replaced with something more suggestive - when generating the embedding folder, you will wish to have a uniquely identifiable name. In this case, a good key name might be `south_park_art_generation_7000_steps`.
 
-Anyone who wishes to contribute to this project, whether documentation, features, bug fixes, code
-cleanup, testing, or code reviews, is very much encouraged to do so.
+### 6. Performing Inference
 
-To join, just raise your hand on the InvokeAI Discord server (#dev-chat) or the GitHub discussion board.
+In order to start the `txt2img` prompt-to-image generation process, you would have to run a command in the style (pun intended) of:
+```
+python ./scripts/invoke.py --embedding_path /path/to/embeddings.pt
+```
 
-If you'd like to help with localization, please register on [Weblate][translation status link]. If you want add a new language, please let us know which language and we will add it to the Weblate project.
+A working example for me was:
+```
+python scripts\invoke.py --embedding_path logs\style_cartoons2022-12-20T18-37-23_15ksteps_cartoons\checkpoints\embeddings.pt
+```
 
-If you are unfamiliar with how
-to contribute to GitHub projects, here is a
-[Getting Started Guide](https://opensource.com/article/19/7/create-pull-request-github). A full set of contribution guidelines, along with templates, are in progress. You can **make your pull request against the "main" branch**.
+I have uploaded all my logs generated throughout my experiments. These logs contain generated embeddings (during the fine-tuning process), alongside train-validation images. They can be found in the `logs` directory.
 
-We hope you enjoy using our software as much as we enjoy creating it,
-and we hope that some of those of you who are reading this will elect
-to become part of our community.
 
-Welcome to InvokeAI!
 
-### Contributors
-
-This fork is a combined effort of various people from across the world.
-[Check out the list of all these amazing people](https://invoke-ai.github.io/InvokeAI/other/CONTRIBUTORS/). We thank them for
-their time, hard work and effort.
-
-Thanks to [Weblate](https://weblate.org/) for generously providing translation services to this project.
-
-### Support
-
-For support, please use this repository's GitHub Issues tracking service, or join the Discord.
-
-Original portions of the software are Copyright (c) 2023 by respective contributors.
-
+## 5. Art Generation Results
+TODO

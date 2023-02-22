@@ -1,6 +1,4 @@
 # ignore default image save location and model symbolic link
-.idea/
-embeddings/
 outputs/
 models/ldm/stable-diffusion-v1/model.ckpt
 **/restoration/codeformer/weights
@@ -8,7 +6,6 @@ models/ldm/stable-diffusion-v1/model.ckpt
 # ignore user models config
 configs/models.user.yaml
 config/models.user.yml
-invokeai.init
 
 # ignore the Anaconda/Miniconda installer used while building Docker image
 anaconda.sh
@@ -73,7 +70,6 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
-junit/
 
 # Translations
 *.mo
@@ -197,7 +193,11 @@ checkpoints
 .DS_Store
 
 # Let the frontend manage its own gitignore
-!invokeai/frontend/*
+!frontend/*
+frontend/apt-get
+frontend/dist
+frontend/sudo
+frontend/update
 
 # Scratch folder
 .scratch/
@@ -218,7 +218,7 @@ models/clipseg
 models/gfpgan
 
 # ignore initfile
-.invokeai
+invokeai.init
 
 # ignore environment.yml and requirements.txt
 # these are links to the real files in environments-and-requirements
@@ -226,11 +226,12 @@ environment.yml
 requirements.txt
 
 # source installer files
-installer/*zip
-installer/install.bat
-installer/install.sh
-installer/update.bat
-installer/update.sh
+source_installer/*zip
+source_installer/invokeAI
+install.bat
+install.sh
+update.bat
+update.sh
 
-# no longer stored in source directory
-models
+# this may be present if the user created a venv
+invokeai

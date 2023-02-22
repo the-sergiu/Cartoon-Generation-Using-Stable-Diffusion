@@ -30,7 +30,6 @@ def build_opt(post_data, seed, gfpgan_model_exists):
     # however, this code is here against that eventuality
     setattr(opt, 'embiggen', None)
     setattr(opt, 'embiggen_tiles', None)
-    setattr(opt, 'embiggen_strength', None)
 
     setattr(opt, 'facetool_strength', float(post_data['facetool_strength']) if gfpgan_model_exists else 0)
     setattr(opt, 'upscale', [int(post_data['upscale_level']), float(post_data['upscale_strength'])] if post_data['upscale_level'] != '' else None)
@@ -61,7 +60,7 @@ def build_opt(post_data, seed, gfpgan_model_exists):
                 broken = True
                 break
             opt.with_variations.append([seed, weight])
-
+    
     if broken:
         raise CanceledException
 
@@ -99,7 +98,7 @@ class DreamServer(BaseHTTPRequestHandler):
             self.send_header("Content-type", "application/json")
             self.end_headers()
             output = []
-
+            
             log_file = os.path.join(self.outdir, "legacy_web_log.txt")
             if os.path.exists(log_file):
                 with open(log_file, "r") as log:

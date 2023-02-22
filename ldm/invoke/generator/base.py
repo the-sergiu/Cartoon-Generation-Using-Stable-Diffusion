@@ -2,39 +2,23 @@
 Base class for ldm.invoke.generator.*
 including img2img, txt2img, and inpaint
 '''
-from __future__ import annotations
-
-import os
-import os.path as osp
-import random
-import traceback
-from contextlib import nullcontext
-
-import cv2
-import numpy as np
 import torch
-
-from PIL import Image, ImageFilter, ImageChops
-from diffusers import DiffusionPipeline
-from einops import rearrange
-from pathlib import Path
+import numpy as  np
+import random
+import os
+import traceback
+from tqdm import tqdm, trange
+from PIL import Image, ImageFilter
+from einops import rearrange, repeat
 from pytorch_lightning import seed_everything
-from tqdm import trange
-
-import invokeai.assets.web as web_assets
-from ldm.models.diffusion.ddpm import DiffusionWrapper
+from ldm.invoke.devices import choose_autocast
 from ldm.util import rand_perlin_2d
 
 downsampling = 8
-CAUTION_IMG = 'caution.png'
+CAUTION_IMG = 'assets/caution.png'
 
-class Generator:
-    downsampling_factor: int
-    latent_channels: int
-    precision: str
-    model: DiffusionWrapper | DiffusionPipeline
-
-    def __init__(self, model: DiffusionWrapper | DiffusionPipeline, precision: str):
+class Generator():
+    def __init__(self, model, precision):
         self.model = model
         self.precision = precision
         self.seed = None
@@ -47,7 +31,6 @@ class Generator:
         self.with_variations = []
         self.use_mps_noise = False
         self.free_gpu_mem = None
-        self.caution_img = None
 
     # this is going to be overridden in img2img.py, txt2img.py and inpaint.py
     def get_make_image(self,prompt,**kwargs):
@@ -64,15 +47,10 @@ class Generator:
 
     def generate(self,prompt,init_image,width,height,sampler, iterations=1,seed=None,
                  image_callback=None, step_callback=None, threshold=0.0, perlin=0.0,
-                 h_symmetry_time_pct=None, v_symmetry_time_pct=None,
                  safety_checker:dict=None,
-                 free_gpu_mem: bool=False,
                  **kwargs):
-        scope = nullcontext
+        scope = choose_autocast(self.precision)
         self.safety_checker = safety_checker
-        self.free_gpu_mem = free_gpu_mem
-        attention_maps_images = []
-        attention_maps_callback = lambda saver: attention_maps_images.append(saver.get_stacked_maps_image())
         make_image = self.get_make_image(
             prompt,
             sampler = sampler,
@@ -82,9 +60,6 @@ class Generator:
             step_callback = step_callback,
             threshold     = threshold,
             perlin        = perlin,
-            h_symmetry_time_pct     = h_symmetry_time_pct,
-            v_symmetry_time_pct     = v_symmetry_time_pct,
-            attention_maps_callback = attention_maps_callback,
             **kwargs
         )
         results             = []
@@ -120,18 +95,12 @@ class Generator:
                 results.append([image, seed])
 
                 if image_callback is not None:
-                    attention_maps_image = None if len(attention_maps_images)==0 else attention_maps_images[-1]
-                    image_callback(image, seed, first_seed=first_seed, attention_maps_image=attention_maps_image)
+                    image_callback(image, seed, first_seed=first_seed)
 
                 seed = self.new_seed()
 
-                # Free up memory from the last generation.
-                clear_cuda_cache = kwargs['clear_cuda_cache'] if 'clear_cuda_cache' in kwargs else None
-                if clear_cuda_cache is not None:
-                    clear_cuda_cache()
-
         return results
-
+    
     def sample_to_image(self,samples)->Image.Image:
         """
         Given samples returned from a sampler, converts
@@ -148,56 +117,6 @@ class Generator:
         return Image.fromarray(x_sample.astype(np.uint8))
 
         # write an approximate RGB image from latent samples for a single step to PNG
-
-    def repaste_and_color_correct(self, result: Image.Image, init_image: Image.Image, init_mask: Image.Image, mask_blur_radius: int = 8) -> Image.Image:
-        if init_image is None or init_mask is None:
-            return result
-
-        # Get the original alpha channel of the mask if there is one.
-        # Otherwise it is some other black/white image format ('1', 'L' or 'RGB')
-        pil_init_mask = init_mask.getchannel('A') if init_mask.mode == 'RGBA' else init_mask.convert('L')
-        pil_init_image = init_image.convert('RGBA') # Add an alpha channel if one doesn't exist
-
-        # Build an image with only visible pixels from source to use as reference for color-matching.
-        init_rgb_pixels = np.asarray(init_image.convert('RGB'), dtype=np.uint8)
-        init_a_pixels = np.asarray(pil_init_image.getchannel('A'), dtype=np.uint8)
-        init_mask_pixels = np.asarray(pil_init_mask, dtype=np.uint8)
-
-        # Get numpy version of result
-        np_image = np.asarray(result, dtype=np.uint8)
-
-        # Mask and calculate mean and standard deviation
-        mask_pixels = init_a_pixels * init_mask_pixels > 0
-        np_init_rgb_pixels_masked = init_rgb_pixels[mask_pixels, :]
-        np_image_masked = np_image[mask_pixels, :]
-
-        if np_init_rgb_pixels_masked.size > 0:
-            init_means = np_init_rgb_pixels_masked.mean(axis=0)
-            init_std = np_init_rgb_pixels_masked.std(axis=0)
-            gen_means = np_image_masked.mean(axis=0)
-            gen_std = np_image_masked.std(axis=0)
-
-            # Color correct
-            np_matched_result = np_image.copy()
-            np_matched_result[:,:,:] = (((np_matched_result[:,:,:].astype(np.float32) - gen_means[None,None,:]) / gen_std[None,None,:]) * init_std[None,None,:] + init_means[None,None,:]).clip(0, 255).astype(np.uint8)
-            matched_result = Image.fromarray(np_matched_result, mode='RGB')
-        else:
-            matched_result = Image.fromarray(np_image, mode='RGB')
-
-        # Blur the mask out (into init image) by specified amount
-        if mask_blur_radius > 0:
-            nm = np.asarray(pil_init_mask, dtype=np.uint8)
-            nmd = cv2.erode(nm, kernel=np.ones((3,3), dtype=np.uint8), iterations=int(mask_blur_radius / 2))
-            pmd = Image.fromarray(nmd, mode='L')
-            blurred_init_mask = pmd.filter(ImageFilter.BoxBlur(mask_blur_radius))
-        else:
-            blurred_init_mask = pil_init_mask
-
-        multiplied_blurred_init_mask = ImageChops.multiply(blurred_init_mask, self.pil_image.split()[-1])
-
-        # Paste original on color-corrected generation (using blurred mask)
-        matched_result.paste(init_image, (0,0), mask = multiplied_blurred_init_mask)
-        return matched_result
 
     def sample_to_lowres_estimated_image(self,samples):
         # origingally adapted from code by @erucipe and @keturn here:
@@ -245,20 +164,11 @@ class Generator:
         (txt2img) or from the latent image (img2img, inpaint)
         """
         raise NotImplementedError("get_noise() must be implemented in a descendent class")
-
+    
     def get_perlin_noise(self,width,height):
         fixdevice = 'cpu' if (self.model.device.type == 'mps') else self.model.device
-        # limit noise to only the diffusion image channels, not the mask channels
-        input_channels = min(self.latent_channels, 4)
-        # round up to the nearest block of 8
-        temp_width = int((width + 7) / 8) * 8
-        temp_height = int((height + 7) / 8) * 8
-        noise = torch.stack([
-            rand_perlin_2d((temp_height, temp_width),
-                           (8, 8),
-                           device = self.model.device).to(fixdevice) for _ in range(input_channels)], dim=0).to(self.model.device)
-        return noise[0:4, 0:height, 0:width]
-
+        return torch.stack([rand_perlin_2d((height, width), (8, 8), device = self.model.device).to(fixdevice) for _ in range(self.latent_channels)], dim=0).to(self.model.device)
+    
     def new_seed(self):
         self.seed = random.randrange(0, np.iinfo(np.uint32).max)
         return self.seed
@@ -327,22 +237,12 @@ class Generator:
     def blur(self,input):
         blurry = input.filter(filter=ImageFilter.GaussianBlur(radius=32))
         try:
-            caution = self.get_caution_img()
-            if caution:
-                blurry.paste(caution,(0,0),caution)
+            caution = Image.open(CAUTION_IMG)
+            caution = caution.resize((caution.width // 2, caution.height //2))
+            blurry.paste(caution,(0,0),caution)
         except FileNotFoundError:
             pass
         return blurry
-
-    def get_caution_img(self):
-        path = None
-        if self.caution_img:
-            return self.caution_img
-        path = Path(web_assets.__path__[0]) / CAUTION_IMG
-        print(f'DEBUG: path to caution = {path}')
-        caution = Image.open(path)
-        self.caution_img = caution.resize((caution.width // 2, caution.height //2))
-        return self.caution_img
 
     # this is a handy routine for debugging use. Given a generated sample,
     # convert it into a PNG image and store it at the indicated path
@@ -354,30 +254,4 @@ class Generator:
             os.makedirs(dirname, exist_ok=True)
         image.save(filepath,'PNG')
 
-
-    def torch_dtype(self)->torch.dtype:
-        return torch.float16 if self.precision == 'float16' else torch.float32
-
-    # returns a tensor filled with random numbers from a normal distribution
-    def get_noise(self,width,height):
-        device         = self.model.device
-        # limit noise to only the diffusion image channels, not the mask channels
-        input_channels = min(self.latent_channels, 4)
-        if self.use_mps_noise or device.type == 'mps':
-            x = torch.randn([1,
-                             input_channels,
-                             height // self.downsampling_factor,
-                             width  // self.downsampling_factor],
-                            dtype=self.torch_dtype(),
-                            device='cpu').to(device)
-        else:
-            x = torch.randn([1,
-                             input_channels,
-                             height // self.downsampling_factor,
-                             width  // self.downsampling_factor],
-                            dtype=self.torch_dtype(),
-                            device=device)
-        if self.perlin > 0.0:
-            perlin_noise = self.get_perlin_noise(width  // self.downsampling_factor, height // self.downsampling_factor)
-            x = (1-self.perlin)*x + self.perlin*perlin_noise
-        return x
+        

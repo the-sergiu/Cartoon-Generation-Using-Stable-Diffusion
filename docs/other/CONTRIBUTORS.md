@@ -13,22 +13,6 @@ We thank them for all of their time and hard work.
 
 - [Lincoln D. Stein](mailto:lincoln.stein@gmail.com)
 
-## **Current core team**
-
-* @lstein (Lincoln Stein) - Co-maintainer
-* @blessedcoolant - Co-maintainer
-* @hipsterusername (Kent Keirsey) - Product Manager
-* @psychedelicious - Web Team Leader
-* @Kyle0654 (Kyle Schouviller) - Node Architect and General Backend Wizard
-* @damian0815 - Attention Systems and Gameplay Engineer
-* @mauwii (Matthias Wild) - Continuous integration and product maintenance engineer
-* @Netsvetaev (Artur Netsvetaev) - UI/UX Developer
-* @tildebyte - General gadfly and resident (self-appointed) know-it-all
-* @keturn - Lead for Diffusers port
-* @ebr (Eugene Brodsky) - Cloud/DevOps/Sofware engineer; your friendly neighbourhood cluster-autoscaler
-* @jpphoto (Jonathan Pollack) - Inference and rendering engine optimization
-* @genomancer (Gregg Helt) - Model training and merging
-
 ## **Contributions by**
 
 - [Sean McLellan](https://github.com/Oceanswave)
@@ -77,7 +61,6 @@ We thank them for all of their time and hard work.
 - [Kent Keirsey](https://github.com/hipsterusername)
 - [psychedelicious](https://github.com/psychedelicious)
 - [damian0815](https://github.com/damian0815)
-- [Eugene Brodsky](https://github.com/ebr)
 
 ## **Original CompVis Authors**
 

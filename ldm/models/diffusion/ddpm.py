@@ -22,7 +22,6 @@ from pytorch_lightning.utilities.distributed import rank_zero_only
 from omegaconf import ListConfig
 import urllib
 
-from ldm.modules.textual_inversion_manager import TextualInversionManager
 from ldm.util import (
     log_txt_as_img,
     exists,
@@ -679,13 +678,6 @@ class LatentDiffusion(DDPM):
         self.embedding_manager = self.instantiate_embedding_manager(
             personalization_config, self.cond_stage_model
         )
-        self.textual_inversion_manager = TextualInversionManager(
-            tokenizer = self.cond_stage_model.tokenizer,
-            text_encoder = self.cond_stage_model.transformer,
-            full_precision = True
-        )
-        # this circular component dependency is gross and bad, needs to be rethought
-        self.cond_stage_model.set_textual_inversion_manager(self.textual_inversion_manager)
 
         self.emb_ckpt_counter = 0
 
@@ -1498,7 +1490,7 @@ class LatentDiffusion(DDPM):
         )
         loss_dict.update({f'{prefix}/loss_simple': loss_simple.mean()})
 
-        logvar_t = self.logvar[t.item()].to(self.device)
+        logvar_t = self.logvar[t].to(self.device)
         loss = loss_simple / torch.exp(logvar_t) + logvar_t
         # loss = loss_simple / torch.exp(self.logvar) + self.logvar
         if self.learn_logvar:

@@ -1,12 +1,11 @@
 '''
 ldm.invoke.generator.txt2img inherits from ldm.invoke.generator
 '''
-import PIL.Image
-import torch
 
-from .base import Generator
-from .diffusers_pipeline import StableDiffusionGeneratorPipeline, ConditioningData
-from ...models.diffusion.shared_invokeai_diffusion import PostprocessingSettings
+import torch
+import numpy as  np
+from ldm.invoke.generator.base import Generator
+from ldm.models.diffusion.shared_invokeai_diffusion import InvokeAIDiffuserComponent
 
 
 class Txt2Img(Generator):
@@ -15,47 +14,67 @@ class Txt2Img(Generator):
 
     @torch.no_grad()
     def get_make_image(self,prompt,sampler,steps,cfg_scale,ddim_eta,
-                       conditioning,width,height,step_callback=None,threshold=0.0,warmup=0.2,perlin=0.0,
-                       h_symmetry_time_pct=None,v_symmetry_time_pct=None,attention_maps_callback=None,
-                       **kwargs):
+                       conditioning,width,height,step_callback=None,threshold=0.0,perlin=0.0,**kwargs):
         """
         Returns a function returning an image derived from the prompt and the initial image
         Return value depends on the seed at the time you call it
         kwargs are 'width' and 'height'
         """
         self.perlin = perlin
-
-        # noinspection PyTypeChecker
-        pipeline: StableDiffusionGeneratorPipeline = self.model
-        pipeline.scheduler = sampler
-
         uc, c, extra_conditioning_info   = conditioning
-        conditioning_data = (
-            ConditioningData(
-                uc, c, cfg_scale, extra_conditioning_info,
-                postprocessing_settings=PostprocessingSettings(
-                    threshold=threshold,
-                    warmup=warmup,
-                    h_symmetry_time_pct=h_symmetry_time_pct,
-                    v_symmetry_time_pct=v_symmetry_time_pct
-                )
-            ).add_scheduler_args_if_applicable(pipeline.scheduler, eta=ddim_eta))
 
-        def make_image(x_T) -> PIL.Image.Image:
-            pipeline_output = pipeline.image_from_embeddings(
-                latents=torch.zeros_like(x_T,dtype=self.torch_dtype()),
-                noise=x_T,
-                num_inference_steps=steps,
-                conditioning_data=conditioning_data,
-                callback=step_callback,
+        @torch.no_grad()
+        def make_image(x_T):
+            shape = [
+                self.latent_channels,
+                height // self.downsampling_factor,
+                width  // self.downsampling_factor,
+            ]
+
+            if self.free_gpu_mem and self.model.model.device != self.model.device:
+                self.model.model.to(self.model.device)
+                                
+            sampler.make_schedule(ddim_num_steps=steps, ddim_eta=ddim_eta, verbose=False)
+
+            samples, _ = sampler.sample(
+                batch_size                   = 1,
+                S                            = steps,
+                x_T                          = x_T,
+                conditioning                 = c,
+                shape                        = shape,
+                verbose                      = False,
+                unconditional_guidance_scale = cfg_scale,
+                unconditional_conditioning   = uc,
+                extra_conditioning_info      = extra_conditioning_info,
+                eta                          = ddim_eta,
+                img_callback                 = step_callback,
+                threshold                    = threshold,
             )
 
-            if pipeline_output.attention_map_saver is not None and attention_maps_callback is not None:
-                attention_maps_callback(pipeline_output.attention_map_saver)
+            if self.free_gpu_mem:
+                self.model.model.to("cpu")
 
-            return pipeline.numpy_to_pil(pipeline_output.images)[0]
+            return self.sample_to_image(samples)
 
         return make_image
 
 
+    # returns a tensor filled with random numbers from a normal distribution
+    def get_noise(self,width,height):
+        device         = self.model.device
+        if self.use_mps_noise or device.type == 'mps':
+            x = torch.randn([1,
+                                self.latent_channels,
+                                height // self.downsampling_factor,
+                                width  // self.downsampling_factor],
+                               device='cpu').to(device)
+        else:
+            x = torch.randn([1,
+                                self.latent_channels,
+                                height // self.downsampling_factor,
+                                width  // self.downsampling_factor],
+                               device=device)
+        if self.perlin > 0.0:
+            x = (1-self.perlin)*x + self.perlin*self.get_perlin_noise(width  // self.downsampling_factor, height // self.downsampling_factor)
+        return x
 

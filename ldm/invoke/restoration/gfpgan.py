@@ -3,7 +3,6 @@ import warnings
 import os
 import sys
 import numpy as np
-from ldm.invoke.globals import Globals
 
 from PIL import Image
 
@@ -11,12 +10,9 @@ from PIL import Image
 class GFPGAN():
     def __init__(
             self,
-            gfpgan_model_path='models/gfpgan/GFPGANv1.4.pth'
-    ) -> None:
+            gfpgan_model_path='./models/gfpgan/GFPGANv1.4.pth') -> None:
 
-        if not os.path.isabs(gfpgan_model_path):
-            gfpgan_model_path=os.path.abspath(os.path.join(Globals.root,gfpgan_model_path))
-        self.model_path = gfpgan_model_path
+        self.model_path = os.path.join(gfpgan_model_path)
         self.gfpgan_model_exists = os.path.isfile(self.model_path)
 
         if not self.gfpgan_model_exists:
@@ -33,8 +29,6 @@ class GFPGAN():
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore', category=DeprecationWarning)
             warnings.filterwarnings('ignore', category=UserWarning)
-            cwd = os.getcwd()
-            os.chdir(os.path.join(Globals.root,'models'))
             try:
                 from gfpgan import GFPGANer
                 self.gfpgan = GFPGANer(
@@ -48,7 +42,6 @@ class GFPGAN():
                 import traceback
                 print('>> Error loading GFPGAN:', file=sys.stderr)
                 print(traceback.format_exc(), file=sys.stderr)
-            os.chdir(cwd)
 
         if self.gfpgan is None:
             print(
