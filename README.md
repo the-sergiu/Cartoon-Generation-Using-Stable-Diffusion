@@ -2,8 +2,8 @@
 
 ## Stable Diffusion Art Generation using the InvokeAI Codebase
 
-## TODO: Insert images of generated art
 
+![Simpsons Generated](assets\cartoons\1.png)
 
 </div>
 
@@ -154,13 +154,13 @@ to render 512x512 images.
 
 ## 4. Fine-tuning for Art Generation
 
-### 1. Allowing for download of models
+### 4.1. Allowing for download of models
 
 In order to allow for download of models (which is absolutely necessary as they do are not included in the codebase) you must make a few changes. Go to `ldm/modules/encoders/modules/py` and set the `local_files_only` flag to `False` in `BERTTokenizer` and `FrozenCLIPEmbedder`.
 
 The fine-tuning process cannot start without these models being present.
 
-### 2. Importing Stable-Diffusion and other models checkpoints
+### 4.2. Importing Stable-Diffusion and other models checkpoints
 
 The above step downloaded models automatically. For some other models, we are forced to copy them manually in the codebase.
 
@@ -178,7 +178,7 @@ As the name suggest, we will have to place the mdoel checkpoints in their respec
 
 *the Stable Diffusion model chosen should be the one optimised for fine-tuning, not inference.
 
-### 3. Training Data
+### 4.3. Training Data
 
 I also created a directory named `training_data` in the root folder of the repo. This is where we will store the raw and processed training data. 
 
@@ -186,7 +186,7 @@ Raw images are the ones procured from the internet. I leveraged the `Preprocess_
 
 Processed images, in the case of my art generation, are stored in different sub-directories based on style.
 
-### 4. Config Files
+### 4.4. Config Files
 
 Config files can be found in the `config` directory. There are 2 main config files we are mainly interested in:
 
@@ -197,7 +197,7 @@ The `models` config can be left as is, it's used for "knowing" where to find the
 
 The `v1-finetune_style.yaml` config will dictate how the entire fine-tuning process will proceed. This amazing [Medium Article](https://towardsdatascience.com/how-to-fine-tune-stable-diffusion-using-textual-inversion-b995d7ecc095)  goes over the importance of various parameters found within the config file.
 
-### 5. Starting the Fine-Tuning Process (cmd)
+### 4.5. Starting the Fine-Tuning Process (cmd)
 Before running the below command, make sure you have activated your invokeai environment.
 
 The command below is a working example I used in order to generate a style embedding using South Park. The generated embedding would later be used for inference (and implicitly new Art Generation).
@@ -212,7 +212,7 @@ python main.py --base configs\stable-diffusion\v1-finetune_style.yaml \
 ```
 The `my_key` parameter should probably be replaced with something more suggestive - when generating the embedding folder, you will wish to have a uniquely identifiable name. In this case, a good key name might be `south_park_art_generation_7000_steps`.
 
-### 6. Performing Inference
+### 4.6. Performing Inference
 
 In order to start the `txt2img` prompt-to-image generation process, you would have to run a command in the style (pun intended) of:
 ```
@@ -226,7 +226,12 @@ python scripts\invoke.py --embedding_path logs\style_cartoons2022-12-20T18-37-23
 
 I have uploaded all my logs generated throughout my experiments. These logs contain generated embeddings (during the fine-tuning process), alongside train-validation images. They can be found in the `logs` directory.
 
-
-
 ## 5. Art Generation Results
-TODO
+
+Below, we can see some examples of generated art during the process of fine-tuning.
+
+![Generated SP](assets\cartoons\2.png)
+![Generated SP Art](assets\cartoons\3.png)
+![Generated Simpsons](assets\cartoons\4.png)
+![Generated Naruto](assets\cartoons\5.png)
+![Generated All](assets\cartoons\6.png)
