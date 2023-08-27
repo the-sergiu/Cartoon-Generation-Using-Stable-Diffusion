@@ -3,7 +3,7 @@
 ## Stable Diffusion Art Generation using the InvokeAI Codebase
 
 
-![Simpsons Generated](assets\cartoons\1.png)
+![Simpsons Generated](assets/cartoons/1.png)
 
 </div>
 
@@ -230,8 +230,8 @@ I have uploaded all my logs generated throughout my experiments. These logs cont
 
 Below, we can see some examples of generated art during the process of fine-tuning.
 
-![Generated SP](assets\cartoons\2.png)
-![Generated SP Art](assets\cartoons\3.png)
-![Generated Simpsons](assets\cartoons\4.png)
-![Generated Naruto](assets\cartoons\5.png)
-![Generated All](assets\cartoons\6.png)
+![Generated SP](assets/cartoons/2.png)
+![Generated SP Art](assets/cartoons/3.png)
+![Generated Simpsons](assets/cartoons/4.png)
+![Generated Naruto](assets/cartoons/5.png)
+![Generated All](assets/cartoons/6.png)
