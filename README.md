@@ -9,13 +9,23 @@
 
 ## Table of Contents
 
-1. **Quick Start**
+1. **Art Generation Results**
 2. **Installation**
 3. **Hardware Requirements**
 4. **Fine-tuning for Art Generation**
-5. **Art Generation Results**
 
-## 1. Getting Started with InvokeAI
+
+## 1. Art Generation Results
+
+Below, we can see some examples of generated art during the process of fine-tuning.
+
+![Generated SP](assets/cartoons/2.png)
+![Generated SP Art](assets/cartoons/3.png)
+![Generated Simpsons](assets/cartoons/4.png)
+![Generated Naruto](assets/cartoons/5.png)
+![Generated All](assets/cartoons/6.png)
+
+## 2. Getting Started with InvokeAI
 
 For full installation and upgrade instructions, please see:
 [InvokeAI Installation Overview](https://invoke-ai.github.io/InvokeAI/installation/)
@@ -225,13 +235,3 @@ python scripts\invoke.py --embedding_path logs\style_cartoons2022-12-20T18-37-23
 ```
 
 I have uploaded all my logs generated throughout my experiments. These logs contain generated embeddings (during the fine-tuning process), alongside train-validation images. They can be found in the `logs` directory.
-
-## 5. Art Generation Results
-
-Below, we can see some examples of generated art during the process of fine-tuning.
-
-![Generated SP](assets/cartoons/2.png)
-![Generated SP Art](assets/cartoons/3.png)
-![Generated Simpsons](assets/cartoons/4.png)
-![Generated Naruto](assets/cartoons/5.png)
-![Generated All](assets/cartoons/6.png)
